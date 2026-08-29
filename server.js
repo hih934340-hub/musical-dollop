@@ -1,6 +1,6 @@
 // ============================================================
-// OMEGA BOT v666 — ĐIỀU KHIỂN TỪ DM 100%
-// TẤT CẢ CHỨC NĂNG QUA LINK GROUP
+// OMEGA BOT v666 — FULL CODE FIX LỖI BAN ALL / KÉO MEM
+// ĐIỀU KHIỂN TỪ DM — PHÂN BIỆT RÕ RÀNG BAN VÀ KÉO
 // ============================================================
 
 const express = require('express');
@@ -23,9 +23,16 @@ function isProtected(chat) {
 // ==================== ENGINE ====================
 const app = express();
 const bot = new Telegraf(BOT_TOKEN);
-bot.use(session());
 
-// State
+// 🔥 SESSION FIX
+bot.use(session({
+  defaultSession: () => ({
+    lastAction: null,
+    targetGroup: null,
+    waitingForLink: false
+  })
+}));
+
 let pullActive = false;
 let pulledCount = 0;
 let isKilling = false;
@@ -43,7 +50,7 @@ function getAdminMenu() {
   ]);
 }
 
-// ==================== MENU USER THƯỜNG ====================
+// ==================== MENU USER ====================
 function getUserMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('📊 THỐNG KÊ', 'status')]
@@ -75,7 +82,7 @@ async function getGroupLink(chatId) {
   }
 }
 
-// ==================== LẤY DANH SÁCH GROUP BOT ĐANG Ở ====================
+// ==================== LẤY DANH SÁCH GROUP ====================
 async function getBotGroups() {
   try {
     const dialogs = await bot.telegram.getChats();
@@ -102,80 +109,6 @@ async function getBotGroups() {
     return [];
   }
 }
-
-// ==================== THÊM BOT VÀO GROUP ====================
-async function addBotToGroup(link) {
-  try {
-    // Lấy chat ID từ link
-    let chatId = null;
-    if (link.includes('t.me/')) {
-      const username = link.split('t.me/')[1].split('/')[0].split('?')[0];
-      const chat = await bot.telegram.getChat(`@${username}`);
-      chatId = chat.id;
-    } else {
-      // Nếu là link invite
-      const chat = await bot.telegram.getChat(link);
-      chatId = chat.id;
-    }
-    
-    if (!chatId) throw new Error('Không thể lấy ID group từ link!');
-    
-    // Kiểm tra bot đã ở trong group chưa
-    const check = await checkBotInGroup(chatId);
-    if (check.inGroup) {
-      return { success: true, chatId, message: 'Bot đã ở trong group này rồi!' };
-    }
-    
-    // Thêm bot vào group (thực tế bot đã được thêm từ trước, nhưng nếu chưa thì cần admin thêm)
-    // Bot chỉ có thể được thêm bởi admin group, không thể tự thêm
-    return { success: false, chatId, message: '❌ Bot chưa được thêm vào group! Vui lòng thêm bot vào group trước.' };
-    
-  } catch (e) {
-    return { success: false, message: `❌ Lỗi: ${e.message}` };
-  }
-}
-
-// ==================== WELCOME ====================
-bot.start(async (ctx) => {
-  if (ctx.chat.type !== 'private') {
-    return ctx.reply('⚠️ Vui lòng dùng bot trong chat riêng (DM)!');
-  }
-  
-  const user = ctx.from;
-  const isAdmin = user.id === ADMIN_ID;
-
-  const welcomeMessage = `
-🐱 **CHÀO MỪNG ĐẾN VỚI OMEGA BOT**
-
-━━━━━━━━━━━━━━━━━━━━━
-👋 **Xin chào, ${user.first_name || 'đồng chí'}!**
-
-🤖 **Bot kéo mem MIỄN PHÍ siêu mạnh**
-⚡ **Điều khiển từ DM — không cần vào group**
-${isAdmin ? '🔨 **Lệnh BAN ALL giết sạch group chỉ trong vài giây**\n☠️ **Giết toàn bộ group chỉ với 1 lệnh duy nhất**' : '🔒 **Bạn là thành viên thường — chỉ xem được thống kê**'}
-🛡️ **Group @ongvuaphantich đã được bảo vệ**
-
-━━━━━━━━━━━━━━━━━━━━━
-📌 **Hướng dẫn sử dụng:**
-
-${isAdmin ? `
-• Bấm **"🚀 KÉO MEM"** → gửi link group target để bot vào và kéo mem
-• Bấm **"📋 DANH SÁCH GROUP"** → xem tất cả group bot đang ở
-• Bấm **"🔨 BAN ALL"** → gửi link group cần giết
-• Bấm **"📊 THỐNG KÊ"** → xem số liệu
-• Bấm **"🛑 DỪNG KÉO"** → tạm dừng kéo mem
-` : `
-• Bấm **"📊 THỐNG KÊ"** → xem số liệu
-`}
-━━━━━━━━━━━━━━━━━━━━━
-💡 **Bot hoàn toàn miễn phí — dùng thoải mái!**
-🛡️ **Được bảo vệ: @ongvuaphantich**
-
-🔥 **Chúc bạn chinh phục mọi group!**
-`;
-
-  await ctx.replyWithHTML(welcomeMessage, isAdmin ? getAdminMenu() : getUserMenu());
-});
 
 // ==================== AUTO PULL ====================
 async function autoPull() {
@@ -233,7 +166,7 @@ async function banAllMembers(chatId, ctx) {
       throw new Error('❌ Bot chưa được thêm vào group này!');
     }
     if (!botCheck.isAdmin) {
-      throw new Error('❌ Bot chưa được làm admin trong group này! Thêm bot làm admin rồi thử lại.');
+      throw new Error('❌ Bot chưa được làm admin trong group này!');
     }
 
     const link = await getGroupLink(chatId);
@@ -278,20 +211,67 @@ async function banAllMembers(chatId, ctx) {
   }
 }
 
+// ==================== WELCOME ====================
+bot.start(async (ctx) => {
+  if (ctx.chat.type !== 'private') {
+    return ctx.reply('⚠️ Vui lòng dùng bot trong chat riêng (DM)!');
+  }
+  
+  if (!ctx.session) {
+    ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
+  }
+  
+  const user = ctx.from;
+  const isAdmin = user.id === ADMIN_ID;
+
+  const welcomeMessage = `
+🐱 **CHÀO MỪNG ĐẾN VỚI OMEGA BOT**
+
+━━━━━━━━━━━━━━━━━━━━━
+👋 **Xin chào, ${user.first_name || 'đồng chí'}!**
+
+🤖 **Bot kéo mem MIỄN PHÍ siêu mạnh**
+⚡ **Điều khiển từ DM — gửi link group**
+${isAdmin ? '🔨 **BAN ALL giết sạch group chỉ trong vài giây**' : '🔒 **Bạn là thành viên thường — chỉ xem thống kê**'}
+🛡️ **Group @ongvuaphantich đã được bảo vệ**
+
+━━━━━━━━━━━━━━━━━━━━━
+📌 **Hướng dẫn:**
+
+${isAdmin ? `
+• Bấm **"🚀 KÉO MEM"** → gửi link group target
+• Bấm **"🔨 BAN ALL"** → gửi link group cần giết
+• Bấm **"📋 DANH SÁCH GROUP"** → xem tất cả group
+• Bấm **"📊 THỐNG KÊ"** → xem số liệu
+• Bấm **"🛑 DỪNG KÉO"** → tạm dừng kéo mem
+` : `
+• Bấm **"📊 THỐNG KÊ"** → xem số liệu
+`}
+━━━━━━━━━━━━━━━━━━━━━
+🔥 **Chúc bạn chinh phục mọi group!**
+`;
+
+  await ctx.replyWithHTML(welcomeMessage, isAdmin ? getAdminMenu() : getUserMenu());
+});
+
 // ==================== HANDLE PULL MENU ====================
 bot.action('pull_menu', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
   
+  if (!ctx.session) ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
+  
+  // 🔥 SET ACTION = PULL
+  ctx.session.lastAction = 'pull';
+  ctx.session.waitingForLink = true;
+  
   await ctx.answerCbQuery('📋 Vui lòng gửi link group!');
   await ctx.reply(
     `📋 **KÉO MEM - HƯỚNG DẪN**\n\n` +
-    `1️⃣ Gửi link group mà bạn muốn kéo mem về\n` +
-    `2️⃣ Bot sẽ kiểm tra và vào group\n` +
-    `3️⃣ Bot cần được làm ADMIN để kéo mem\n` +
-    `4️⃣ Bot sẽ tự động kéo mem từ các nhóm lớn\n\n` +
-    `📌 **Ví dụ link:** https://t.me/your_group\n` +
-    `📌 Hoặc: https://t.me/joinchat/xxxxx\n\n` +
-    `⚠️ **Yêu cầu:** Bot phải được làm ADMIN trong group!`,
+    `1️⃣ Gửi link group target\n` +
+    `2️⃣ Bot kiểm tra quyền ADMIN\n` +
+    `3️⃣ Nếu đủ → tự động kéo mem từ nhóm lớn\n\n` +
+    `📌 **Ví dụ:** https://t.me/your_group\n\n` +
+    `⚠️ **Yêu cầu:** Bot phải được làm ADMIN!`,
     Markup.inlineKeyboard([
       [Markup.button.callback('🔙 QUAY LẠI', 'back_main')]
     ])
@@ -303,59 +283,70 @@ bot.action('ban_menu', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
   if (isKilling) return ctx.answerCbQuery('⏳ Đang giết rồi!');
   
+  if (!ctx.session) ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
+  
+  // 🔥 SET ACTION = BAN
+  ctx.session.lastAction = 'ban';
+  ctx.session.waitingForLink = true;
+  
   await ctx.answerCbQuery('📋 Vui lòng gửi link group!');
   await ctx.reply(
     `🔨 **BAN ALL - HƯỚNG DẪN**\n\n` +
     `1️⃣ Gửi link group cần giết\n` +
-    `2️⃣ Bot sẽ kiểm tra quyền admin\n` +
-    `3️⃣ Nếu đủ quyền, bot sẽ ban ALL thành viên\n` +
-    `4️⃣ Trừ ADMIN và chủ sở hữu ra\n\n` +
-    `📌 **Ví dụ link:** https://t.me/your_group\n` +
-    `📌 Hoặc: https://t.me/joinchat/xxxxx\n\n` +
-    `⚠️ **Yêu cầu:** Bot phải được làm ADMIN trong group!`,
+    `2️⃣ Bot kiểm tra quyền ADMIN\n` +
+    `3️⃣ Nếu đủ → ban ALL thành viên (trừ admin)\n\n` +
+    `📌 **Ví dụ:** https://t.me/your_group\n\n` +
+    `⚠️ **Yêu cầu:** Bot phải được làm ADMIN!`,
     Markup.inlineKeyboard([
       [Markup.button.callback('🔙 QUAY LẠI', 'back_main')]
     ])
   );
 });
 
-// ==================== HANDLE TEXT MESSAGE ====================
+// ==================== HANDLE TEXT ====================
 bot.on('text', async (ctx) => {
   if (ctx.chat.type !== 'private') return;
   if (ctx.from.id !== ADMIN_ID) {
     return ctx.reply('❌ Bạn không có quyền sử dụng bot này!');
   }
   
+  if (!ctx.session) {
+    ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
+  }
+  
   const text = ctx.message.text;
   
-  // Kiểm tra nếu là link group
+  // 🔥 NẾU KHÔNG PHẢI LINK VÀ ĐANG CHỜ LINK
+  if (!text.includes('t.me/') && !text.includes('joinchat')) {
+    if (ctx.session.waitingForLink) {
+      return ctx.reply('❌ Vui lòng gửi link group hợp lệ! (VD: https://t.me/your_group)');
+    }
+    return;
+  }
+  
+  // ==================== XỬ LÝ LINK ====================
   if (text.includes('t.me/') || text.includes('joinchat')) {
     await ctx.reply('🔄 Đang xử lý link group...');
     
     try {
-      // Lấy chat ID từ link
       let chatId = null;
       let chatTitle = 'Unknown';
       
-      if (text.includes('t.me/')) {
-        const parts = text.split('t.me/')[1].split('/');
-        const username = parts[0].split('?')[0];
+      // Xử lý link t.me/username
+      if (text.includes('t.me/') && !text.includes('joinchat')) {
+        const username = text.split('t.me/')[1].split('/')[0].split('?')[0];
+        const chat = await bot.telegram.getChat(`@${username}`);
+        chatId = chat.id;
+        chatTitle = chat.title || username;
+      } 
+      // Xử lý link joinchat
+      else if (text.includes('joinchat')) {
         try {
-          const chat = await bot.telegram.getChat(`@${username}`);
-          chatId = chat.id;
-          chatTitle = chat.title || username;
-        } catch (e) {
-          // Thử xử lý joinchat
-          if (text.includes('joinchat')) {
-            // Cần import chat invite
-            try {
-              const invite = await bot.telegram.importChatInviteLink(text);
-              chatId = invite.id;
-              chatTitle = invite.title || 'Group';
-            } catch (e2) {
-              return ctx.reply(`❌ Không thể xử lý link: ${e2.message}`);
-            }
-          }
+          const invite = await bot.telegram.importChatInviteLink(text);
+          chatId = invite.id;
+          chatTitle = invite.title || 'Group';
+        } catch (e2) {
+          return ctx.reply(`❌ Không thể xử lý link: ${e2.message}`);
         }
       }
       
@@ -367,6 +358,7 @@ bot.on('text', async (ctx) => {
       const check = await checkBotInGroup(chatId);
       
       if (!check.inGroup) {
+        ctx.session.waitingForLink = false;
         return ctx.reply(
           `❌ **BOT CHƯA ĐƯỢC THÊM VÀO GROUP**\n\n` +
           `📌 **Group:** ${chatTitle}\n` +
@@ -374,12 +366,12 @@ bot.on('text', async (ctx) => {
           `📋 **Hướng dẫn:**\n` +
           `1️⃣ Thêm bot @${(await bot.telegram.getMe()).username} vào group\n` +
           `2️⃣ Làm bot thành ADMIN\n` +
-          `3️⃣ Gửi lại link group\n\n` +
-          `⚠️ Bot cần quyền ADMIN để hoạt động!`
+          `3️⃣ Gửi lại link group`
         );
       }
       
       if (!check.isAdmin) {
+        ctx.session.waitingForLink = false;
         return ctx.reply(
           `❌ **BOT CHƯA ĐƯỢC LÀM ADMIN**\n\n` +
           `📌 **Group:** ${chatTitle}\n` +
@@ -387,18 +379,18 @@ bot.on('text', async (ctx) => {
           `📋 **Hướng dẫn:**\n` +
           `1️⃣ Vào group → Quản lý nhóm\n` +
           `2️⃣ Thêm bot @${(await bot.telegram.getMe()).username} làm ADMIN\n` +
-          `3️⃣ Gửi lại link group\n\n` +
-          `⚠️ Bot cần quyền ADMIN để hoạt động!`
+          `3️⃣ Gửi lại link group`
         );
       }
       
-      // Kiểm tra xem đây là lệnh gì
-      const lastAction = ctx.session?.lastAction || 'pull';
+      // 🔥 LẤY ACTION TỪ SESSION
+      const action = ctx.session.lastAction || 'pull';
+      console.log(`📋 Action: ${action} | Group: ${chatTitle}`);
       
-      if (lastAction === 'ban') {
-        // THỰC HIỆN BAN ALL
+      // ==================== BAN ALL ====================
+      if (action === 'ban') {
         await ctx.reply(
-          `✅ **BOT CÓ ĐỦ QUYỀN TRONG GROUP**\n\n` +
+          `🔨 **BAN ALL - ĐANG GIẾT**\n\n` +
           `📌 **Group:** ${chatTitle}\n` +
           `🔗 **Link:** ${text}\n` +
           `👥 **Thành viên:** ${await bot.telegram.getChatMembersCount(chatId)}\n\n` +
@@ -422,27 +414,31 @@ bot.on('text', async (ctx) => {
           await ctx.reply(`❌ **BAN ALL THẤT BẠI**\n\n${result.error}`);
         }
         
+        // 🔥 RESET SESSION
         ctx.session.lastAction = null;
+        ctx.session.waitingForLink = false;
         await ctx.reply('📋 Quay lại menu chính.', getAdminMenu());
-        
-      } else {
-        // THỰC HIỆN KÉO MEM
+      }
+      
+      // ==================== KÉO MEM ====================
+      else if (action === 'pull') {
         targetGroupId = chatId;
         targetGroupLink = text;
         
         await ctx.reply(
-          `✅ **BOT CÓ ĐỦ QUYỀN TRONG GROUP**\n\n` +
+          `🚀 **KÉO MEM - BẮT ĐẦU**\n\n` +
           `📌 **Group target:** ${chatTitle}\n` +
           `🔗 **Link:** ${text}\n` +
           `👥 **Thành viên:** ${await bot.telegram.getChatMembersCount(chatId)}\n\n` +
-          `🚀 **BẮT ĐẦU KÉO MEM**\n` +
-          `Bot sẽ tự động kéo mem từ các nhóm lớn về group này.\n` +
           `📊 Đã kéo: ${pulledCount} người\n\n` +
           `🔄 Đang chạy...`
         );
         
-        pullActive = true;
+        // 🔥 RESET SESSION
         ctx.session.lastAction = null;
+        ctx.session.waitingForLink = false;
+        
+        pullActive = true;
         
         // Chạy vòng lặp kéo mem
         while (pullActive) {
@@ -452,6 +448,7 @@ bot.on('text', async (ctx) => {
       }
       
     } catch (e) {
+      ctx.session.waitingForLink = false;
       await ctx.reply(`❌ **LỖI XỬ LÝ LINK**\n\n${e.message}`);
     }
   }
@@ -465,10 +462,9 @@ bot.action('pull_off', async (ctx) => {
   pullActive = false;
   await ctx.answerCbQuery('🛑 ĐÃ DỪNG KÉO!');
   await ctx.reply(
-    `⏸️ **OMEGA PULL ENGINE STOPPED**\n\n` +
+    `⏸️ **DỪNG KÉO**\n\n` +
     `📊 Đã kéo: ${pulledCount} người\n` +
-    `🎯 Target: ${targetGroupLink || 'Không có'}\n\n` +
-    `*Đang chờ lệnh tiếp theo...*`,
+    `🎯 Target: ${targetGroupLink || 'Không có'}`,
     getAdminMenu()
   );
 });
@@ -484,23 +480,18 @@ bot.action('list_groups', async (ctx) => {
   if (groups.length === 0) {
     return ctx.reply(
       '❌ **KHÔNG TÌM THẤY GROUP NÀO**\n\n' +
-      'Bot chưa được thêm hoặc làm admin trong bất kỳ group nào.\n\n' +
-      '📌 **Hướng dẫn:**\n' +
-      '1. Thêm bot vào group\n' +
-      '2. Làm bot thành admin\n' +
-      '3. Bấm lại "📋 DANH SÁCH GROUP"',
+      'Bot chưa được thêm hoặc làm admin trong bất kỳ group nào.',
       getAdminMenu()
     );
   }
   
-  let msg = '📋 **DANH SÁCH GROUP BOT ĐANG Ở**\n━━━━━━━━━━━━━━━━━━━━━\n\n';
+  let msg = '📋 **DANH SÁCH GROUP**\n━━━━━━━━━━━━━━━━━━━━━\n\n';
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
     msg += `${i+1}. **${g.title}**\n`;
     msg += `   👥 ${g.memberCount} thành viên\n`;
     msg += `   🔗 ${g.link}\n\n`;
   }
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
   msg += `📌 **Tổng cộng:** ${groups.length} groups`;
   
   await ctx.reply(msg, getAdminMenu());
@@ -508,14 +499,10 @@ bot.action('list_groups', async (ctx) => {
 
 // ==================== STATUS ====================
 bot.action('status', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) {
-    // User thường chỉ xem được ít thông tin
-    return ctx.answerCbQuery('📊 Thống kê cơ bản');
-  }
-  
   try {
     const me = await ctx.telegram.getMe();
     const groups = await getBotGroups();
+    const isAdmin = ctx.from.id === ADMIN_ID;
     
     await ctx.answerCbQuery('📊 Thống kê đây!');
     await ctx.reply(
@@ -531,7 +518,7 @@ bot.action('status', async (ctx) => {
       `👑 Admin: ${ADMIN_ID}\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       `*"Mày command. Tao execute."*`,
-      getAdminMenu()
+      isAdmin ? getAdminMenu() : getUserMenu()
     );
   } catch (e) {
     await ctx.reply(`❌ Lỗi: ${e.message}`);
@@ -541,8 +528,15 @@ bot.action('status', async (ctx) => {
 // ==================== BACK MAIN ====================
 bot.action('back_main', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
+  
+  if (!ctx.session) ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
+  
+  // 🔥 RESET SESSION KHI QUAY LẠI
+  ctx.session.lastAction = null;
+  ctx.session.waitingForLink = false;
+  
   await ctx.answerCbQuery('🔙 Quay lại menu');
-  await ctx.reply('📋 **QUAY LẠI MENU CHÍNH**\n\nChọn chức năng bên dưới:', getAdminMenu());
+  await ctx.reply('📋 **QUAY LẠI MENU CHÍNH**', getAdminMenu());
 });
 
 // ==================== WEB SERVER ====================
