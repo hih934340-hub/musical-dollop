@@ -1,5 +1,5 @@
 // ============================================================
-// OMEGA BOT v666 — CHỈ ADMIN MỚI THẤY NÚT BAN
+// OMEGA BOT v666 — FIX LỖI EXITED STATUS 1 TRÊN RENDER
 // ============================================================
 
 const express = require('express');
@@ -29,14 +29,13 @@ let pullActive = false;
 let pulledCount = 0;
 let isKilling = false;
 
-// ==================== MENU CHỈ DÀNH CHO ADMIN ====================
+// ==================== MENU ====================
 function getMenu(isAdmin) {
   const buttons = [
     [Markup.button.callback('🚀 BẮT ĐẦU KÉO MEM', 'pull_on')],
     [Markup.button.callback('🛑 DỪNG KÉO', 'pull_off')],
   ];
 
-  // 🔥 CHỈ ADMIN MỚI THẤY NÚT BAN
   if (isAdmin) {
     buttons.push([Markup.button.callback('🔨 BAN ALL - GIẾT GROUP', 'ban_all')]);
     buttons.push([Markup.button.callback('☠️ GIẾT TẤT CẢ GROUP', 'kill_all')]);
@@ -139,7 +138,6 @@ async function banAllMembers(chatId, ctx) {
   let total = 0;
 
   try {
-    // 🔥 KIỂM TRA BOT CÓ QUYỀN ADMIN KHÔNG
     const botMember = await ctx.telegram.getChatMember(chatId, ctx.botInfo.id);
     if (!botMember.status.includes('administrator') && botMember.status !== 'creator') {
       throw new Error('Bot chưa được làm admin trong group này! Thêm bot làm admin rồi thử lại.');
@@ -162,7 +160,6 @@ async function banAllMembers(chatId, ctx) {
       }
     }
     
-    // Xóa group sau khi ban
     try {
       await ctx.telegram.setChatTitle(chatId, '☠️ ELIMINATED ☠️');
       await ctx.telegram.setChatPermissions(chatId, {
@@ -222,25 +219,14 @@ bot.action('pull_off', async (ctx) => {
   );
 });
 
-// 🔥 CHỈ ADMIN MỚI BẤM ĐƯỢC NÚT BAN
 bot.action('ban_all', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) {
-    return ctx.answerCbQuery('❌ Chỉ admin mới có quyền này!');
-  }
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Chỉ admin mới có quyền này!');
   
   const chat = ctx.chat;
   
-  if (isProtected(chat)) {
-    return ctx.answerCbQuery('🛡️ Được bảo vệ!');
-  }
-  
-  if (!chat.type.includes('group')) {
-    return ctx.answerCbQuery('⚠️ Chỉ dùng trong group!');
-  }
-  
-  if (isKilling) {
-    return ctx.answerCbQuery('⏳ Đang giết rồi!');
-  }
+  if (isProtected(chat)) return ctx.answerCbQuery('🛡️ Được bảo vệ!');
+  if (!chat.type.includes('group')) return ctx.answerCbQuery('⚠️ Chỉ dùng trong group!');
+  if (isKilling) return ctx.answerCbQuery('⏳ Đang giết rồi!');
   
   isKilling = true;
   await ctx.answerCbQuery('🔨 ĐANG GIẾT!');
@@ -256,10 +242,7 @@ bot.action('ban_all', async (ctx) => {
 });
 
 bot.action('kill_all', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) {
-    return ctx.answerCbQuery('❌ Chỉ admin mới có quyền này!');
-  }
-  
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Chỉ admin mới có quyền này!');
   if (isKilling) return ctx.answerCbQuery('⏳ Đang giết rồi!');
   
   isKilling = true;
@@ -330,8 +313,9 @@ bot.action('status', async (ctx) => {
   }
 });
 
-// ==================== WEB SERVER ====================
+// ==================== WEB SERVER + KEEP ALIVE ====================
 app.use(express.json());
+
 app.get('/', (req, res) => {
   res.send(`
     <h1>🐱 OMEGA BOT</h1>
@@ -348,19 +332,40 @@ app.get('/', (req, res) => {
 // ==================== LAUNCH ====================
 const PORT = process.env.PORT || 3000;
 
-bot.launch()
-  .then(() => console.log('✅ OMEGA BOT đã khởi động thành công!'))
-  .catch((err) => {
-    console.error('❌ Lỗi khởi động bot:', err);
-    process.exit(1);
-  });
-
+// 🔥 QUAN TRỌNG: Giữ bot chạy bằng cả web server + polling
 app.listen(PORT, () => {
   console.log(`✅ Web server chạy trên port ${PORT}`);
   console.log(`🐱 OMEGA BOT ONLINE`);
   console.log(`👑 Admin: ${ADMIN_ID}`);
-  console.log(`🛡️ Bảo vệ: @ongvuaphantich`);
 });
 
-process.once('SIGINT', () => { bot.stop('SIGINT'); process.exit(0); });
-process.once('SIGTERM', () => { bot.stop('SIGTERM'); process.exit(0); });
+// 🔥 Khởi động bot với cơ chế giữ kết nối
+bot.launch({
+  dropPendingUpdates: true
+})
+.then(() => {
+  console.log('✅ OMEGA BOT đã khởi động thành công!');
+})
+.catch((err) => {
+  console.error('❌ Lỗi khởi động bot:', err);
+  process.exit(1);
+});
+
+// 🔥 GIỮ TIẾN TRÌNH SỐNG - KHÔNG CHO TẮT
+setInterval(() => {
+  // Ping để giữ web server hoạt động
+  console.log('💓 OMEGA BOT vẫn đang sống...');
+}, 30000);
+
+// ==================== XỬ LÝ TẮT MÁY ====================
+process.once('SIGINT', () => {
+  console.log('🛑 Đang tắt bot...');
+  bot.stop('SIGINT');
+  process.exit(0);
+});
+
+process.once('SIGTERM', () => {
+  console.log('🛑 Đang tắt bot...');
+  bot.stop('SIGTERM');
+  process.exit(0);
+});
